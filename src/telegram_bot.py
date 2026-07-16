@@ -172,26 +172,45 @@ async def cmd_holdings(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("\n".join(lines))
 
 
-async def weekly_job(context: ContextTypes.DEFAULT_TYPE):
-    """매주 월요일 07:00 KST에 주간 사이클을 돌리고 결과를 채팅으로 push한다."""
+async def decision_job(context: ContextTypes.DEFAULT_TYPE):
+    """매주 월요일 07:00 KST(장 시작 전) — 금요일 종가+주말 뉴스 기준으로 판단만 내린다."""
     import run_weekly
 
-    log.info("주간 사이클 시작")
+    log.info("주간 판단 시작")
     try:
-        result = await asyncio.get_event_loop().run_in_executor(None, run_weekly.run)
+        result = await asyncio.get_event_loop().run_in_executor(None, run_weekly.run_decision)
     except Exception as e:
-        log.exception("주간 사이클 실패: %s", e)
+        log.exception("주간 판단 실패: %s", e)
         if _ALLOWED_CHAT_ID:
-            await context.bot.send_message(chat_id=_ALLOWED_CHAT_ID, text=f"주간 사이클 실행 실패: {e}")
+            await context.bot.send_message(chat_id=_ALLOWED_CHAT_ID, text=f"주간 판단 실행 실패: {e}")
         return
 
     if not _ALLOWED_CHAT_ID:
         return
 
-    lines = [f"이번 주 AI 섀도우 트랙 사이클 완료 ({result['week_id']})\n"]
+    lines = [f"이번 주 AI 블라인드 판단 완료 ({result['week_id']}) — 체결은 장 시작 후 반영됩니다\n"]
     for d in result["decisions"]:
         lines.append(f"- {d['stock_name']} [{d['action']}] {d['target_weight']:.1f}% (확신도 {d['conviction']})")
-    lines.append("")
+    await context.bot.send_message(chat_id=_ALLOWED_CHAT_ID, text="\n".join(lines))
+
+
+async def execution_job(context: ContextTypes.DEFAULT_TYPE):
+    """매주 월요일 09:05 KST(장 시작 후) — 실제 당일 시가 기준으로 체결/벤치마크를 확정한다."""
+    import run_weekly
+
+    log.info("주간 체결 시작")
+    try:
+        result = await asyncio.get_event_loop().run_in_executor(None, run_weekly.run_execution)
+    except Exception as e:
+        log.exception("주간 체결 실패: %s", e)
+        if _ALLOWED_CHAT_ID:
+            await context.bot.send_message(chat_id=_ALLOWED_CHAT_ID, text=f"주간 체결 실행 실패: {e}")
+        return
+
+    if not _ALLOWED_CHAT_ID:
+        return
+
+    lines = [f"이번 주 체결/벤치마크 완료 ({result['week_id']})\n"]
     for b in result["benchmark"]:
         label = _TRACK_LABEL.get(b["track_id"], b["track_id"])
         lines.append(f"{label}: {b['return_pct']:+.2%}")
@@ -211,8 +230,13 @@ def main():
     app.add_handler(CommandHandler("why", cmd_why))
     app.add_handler(CommandHandler("holdings", cmd_holdings))
 
+    # python-telegram-bot의 JobQueue.run_daily days는 0=일요일 ~ 6=토요일 순서라 월요일은 1이다.
+    MONDAY = 1
     app.job_queue.run_daily(
-        weekly_job, time=datetime.time(7, 0, 0, tzinfo=KST), days=(0,), name="weekly_shadow_track_cycle"
+        decision_job, time=datetime.time(7, 0, 0, tzinfo=KST), days=(MONDAY,), name="weekly_decision"
+    )
+    app.job_queue.run_daily(
+        execution_job, time=datetime.time(9, 5, 0, tzinfo=KST), days=(MONDAY,), name="weekly_execution"
     )
 
     print("텔레그램 Q&A 봇 시작 (Ctrl+C로 종료)")

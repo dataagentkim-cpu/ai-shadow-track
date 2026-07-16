@@ -18,6 +18,17 @@ def _price_change(code: str, from_date: str, to_date: str) -> float:
     return float(hist["Close"].iloc[-1] / hist["Close"].iloc[0] - 1)
 
 
+def _entry_exit_return(code: str, from_date: str, to_date: str) -> float:
+    """AI 트랙 전용: 판단(금요일 종가+뉴스)과 체결(다음 거래일 시가)을 분리해 look-ahead 편향을 제거.
+    진입가에는 슬리피지를 얹고, 청산가(=다음 스냅샷 시점의 시가, 아직 매도한 게 아니라 평가액일 뿐)는 그대로 둔다."""
+    hist = fdr.DataReader(code, from_date, to_date)
+    if len(hist) < 2:
+        return 0.0
+    entry_price = float(hist["Open"].iloc[0]) * (1 + config.EXECUTION_SLIPPAGE_PCT)
+    exit_price = float(hist["Open"].iloc[-1])
+    return exit_price / entry_price - 1
+
+
 def _index_change(from_date: str, to_date: str) -> float:
     kospi = _price_change("KS11", from_date, to_date)
     kosdaq = _price_change("KQ11", from_date, to_date)
@@ -59,7 +70,7 @@ def snapshot_ai_track(week_id: str, date: str) -> dict:
             (config.TRACK_AI_BLIND, prev["week_id"]),
         ).fetchall()
         weighted_return = sum(
-            (d["target_weight"] / 100) * _price_change(d["stock_code"], prev["snapshot_date"], date)
+            (d["target_weight"] / 100) * _entry_exit_return(d["stock_code"], prev["snapshot_date"], date)
             for d in prev_decisions
         )
         value = prev["portfolio_value"] * (1 + weighted_return)

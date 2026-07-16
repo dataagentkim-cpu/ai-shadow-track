@@ -33,3 +33,8 @@ NEWS_PER_STOCK = 5
 TRACK_MY_HOLDINGS = "my_holdings"
 TRACK_AI_BLIND = "ai_blind"
 TRACK_INDEX = "index"
+
+# --- 체결(실행) ---
+# AI 트랙은 매주 완전 리밸런싱을 가정하므로, 판단(금요일 종가+뉴스)과 체결(다음 거래일 시가) 시점을
+# 분리해 look-ahead 편향을 없앤다. 체결가에는 슬리피지를 얹는다 (0.2~0.5% 범위의 중간값).
+EXECUTION_SLIPPAGE_PCT = 0.003

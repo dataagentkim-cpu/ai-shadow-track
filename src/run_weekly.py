@@ -51,31 +51,32 @@ def _log_ai_decisions(conn, week_id: str, date: str, decisions: list[dict]):
         )
 
 
-def run(date: str | None = None):
+def run_decision(date: str | None = None):
+    """판단 단계: 장 시작 전(금요일 종가+주말 뉴스 기준)에 실행. 아직 체결/벤치마크는 안 한다."""
     date = date or datetime.now().strftime("%Y-%m-%d")
     week_id = _week_id(date)
-    print(f"[run_weekly] {date} ({week_id}) 주간 사이클 시작")
+    print(f"[run_decision] {date} ({week_id}) 판단 시작")
 
     init_db()
     conn = get_connection()
 
-    print("[1/5] 유니버스 스냅샷 수집")
+    print("[1/4] 유니버스 스냅샷 수집")
     universe = get_universe_snapshot()
     _log_universe_snapshot(conn, week_id, date, len(universe))
     conn.commit()
 
-    print("[2/5] 정량 스크리너 실행")
+    print("[2/4] 정량 스크리너 실행")
     shortlist_df, screener_output_df = build_shortlist(universe, week_id)
     _log_screener_output(conn, screener_output_df)
     conn.commit()
     print(f"  shortlist {len(shortlist_df)}개 확정")
 
-    print("[3/5] shortlist 뉴스 + 시장 전반 뉴스 수집")
+    print("[3/4] shortlist 뉴스 + 시장 전반 뉴스 수집")
     stock_names = shortlist_df["Name"].tolist()
     news_by_stock = collect_shortlist_news(stock_names)
     market_news = collect_market_news()
 
-    print("[4/5] LLM 블라인드 판단")
+    print("[4/4] LLM 블라인드 판단")
     shortlist_records = shortlist_df[["Code", "Name", "momentum_score"]].rename(
         columns={"Code": "stock_code", "Name": "stock_name"}
     ).to_dict("records")
@@ -85,13 +86,30 @@ def run(date: str | None = None):
     conn.close()
     print(f"  {len(decisions)}개 종목 판단 완료")
 
-    print("[5/5] 3파전 벤치마크 스냅샷")
+    print("[run_decision] 완료")
+    return {"week_id": week_id, "date": date, "decisions": decisions}
+
+
+def run_execution(date: str | None = None):
+    """체결 단계: 장 시작 이후(실제 당일 시가가 나온 뒤) 실행. 3파전 벤치마크를 확정한다."""
+    date = date or datetime.now().strftime("%Y-%m-%d")
+    week_id = _week_id(date)
+    print(f"[run_execution] {date} ({week_id}) 체결/벤치마크 시작")
+
     results = benchmark.snapshot_all(week_id, date)
     for r in results:
         print(f"  {r['track_id']}: {r['value']:,.0f}원 ({r['return_pct']:+.2%})")
 
-    print("[run_weekly] 완료")
-    return {"week_id": week_id, "date": date, "decisions": decisions, "benchmark": results}
+    print("[run_execution] 완료")
+    return {"week_id": week_id, "date": date, "benchmark": results}
+
+
+def run(date: str | None = None):
+    """판단+체결을 한번에 (수동 테스트/일회성 실행용). 실서비스에서는 run_decision과
+    run_execution을 장 시작 전/후로 나눠서 따로 스케줄한다 (telegram_bot.py 참조)."""
+    decision = run_decision(date)
+    execution = run_execution(date)
+    return {**decision, **execution}
 
 
 if __name__ == "__main__":

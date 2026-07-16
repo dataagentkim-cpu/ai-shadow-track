@@ -1,6 +1,10 @@
 # AI 투자 판단 섀도우 트랙 결과를 텔레그램으로 질의응답하는 봇 (long-polling)
+import asyncio
+import datetime
+import logging
 import os
 
+import pytz
 from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
@@ -9,6 +13,11 @@ import config
 from db import get_connection
 
 load_dotenv()
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s | %(message)s")
+log = logging.getLogger("shadowtrack")
+
+KST = pytz.timezone("Asia/Seoul")
 
 _ALLOWED_CHAT_ID = os.getenv("TELEGRAM_ALLOWED_CHAT_ID")
 
@@ -163,6 +172,32 @@ async def cmd_holdings(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("\n".join(lines))
 
 
+async def weekly_job(context: ContextTypes.DEFAULT_TYPE):
+    """매주 월요일 07:00 KST에 주간 사이클을 돌리고 결과를 채팅으로 push한다."""
+    import run_weekly
+
+    log.info("주간 사이클 시작")
+    try:
+        result = await asyncio.get_event_loop().run_in_executor(None, run_weekly.run)
+    except Exception as e:
+        log.exception("주간 사이클 실패: %s", e)
+        if _ALLOWED_CHAT_ID:
+            await context.bot.send_message(chat_id=_ALLOWED_CHAT_ID, text=f"주간 사이클 실행 실패: {e}")
+        return
+
+    if not _ALLOWED_CHAT_ID:
+        return
+
+    lines = [f"이번 주 AI 섀도우 트랙 사이클 완료 ({result['week_id']})\n"]
+    for d in result["decisions"]:
+        lines.append(f"- {d['stock_name']} [{d['action']}] {d['target_weight']:.1f}% (확신도 {d['conviction']})")
+    lines.append("")
+    for b in result["benchmark"]:
+        label = _TRACK_LABEL.get(b["track_id"], b["track_id"])
+        lines.append(f"{label}: {b['return_pct']:+.2%}")
+    await context.bot.send_message(chat_id=_ALLOWED_CHAT_ID, text="\n".join(lines))
+
+
 def main():
     token = os.getenv("TELEGRAM_BOT_TOKEN")
     if not token:
@@ -175,6 +210,10 @@ def main():
     app.add_handler(CommandHandler("history", cmd_history))
     app.add_handler(CommandHandler("why", cmd_why))
     app.add_handler(CommandHandler("holdings", cmd_holdings))
+
+    app.job_queue.run_daily(
+        weekly_job, time=datetime.time(7, 0, 0, tzinfo=KST), days=(0,), name="weekly_shadow_track_cycle"
+    )
 
     print("텔레그램 Q&A 봇 시작 (Ctrl+C로 종료)")
     app.run_polling()

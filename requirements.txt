@@ -1,0 +1,6 @@
+finance-datareader>=0.9.90
+pandas>=2.2.0
+anthropic>=0.40.0
+python-telegram-bot>=20.7
+python-dotenv>=1.0.0
+requests>=2.31.0

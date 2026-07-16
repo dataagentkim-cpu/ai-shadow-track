@@ -1,11 +1,13 @@
 # 네이버 뉴스 검색 API로 shortlist 종목 + 시장 전반 뉴스만 수집 (전체 종목 뉴스는 수집하지 않음)
 import re
+import time
 
 import requests
 
 import config
 
 _API_URL = "https://openapi.naver.com/v1/search/news.json"
+_REQUEST_INTERVAL_SEC = 0.2  # 연속 호출 시 네이버 순간 rate limit(429) 방지
 
 
 def _strip_html(text: str) -> str:
@@ -23,17 +25,23 @@ def search_news(query: str, display: int = 5) -> list[dict]:
         "X-Naver-Client-Secret": config.NAVER_CLIENT_SECRET,
     }
     params = {"query": query, "display": display, "sort": "date"}
-    resp = requests.get(_API_URL, headers=headers, params=params, timeout=10)
+
+    for attempt in range(3):
+        resp = requests.get(_API_URL, headers=headers, params=params, timeout=10)
+        if resp.status_code == 429:
+            time.sleep(1.0 * (attempt + 1))
+            continue
+        resp.raise_for_status()
+        items = resp.json().get("items", [])
+        return [
+            {
+                "title": _strip_html(item["title"]),
+                "description": _strip_html(item["description"]),
+                "pub_date": item["pubDate"],
+            }
+            for item in items
+        ]
     resp.raise_for_status()
-    items = resp.json().get("items", [])
-    return [
-        {
-            "title": _strip_html(item["title"]),
-            "description": _strip_html(item["description"]),
-            "pub_date": item["pubDate"],
-        }
-        for item in items
-    ]
 
 
 def collect_shortlist_news(stock_names: list[str]) -> dict[str, list[dict]]:
@@ -44,6 +52,7 @@ def collect_shortlist_news(stock_names: list[str]) -> dict[str, list[dict]]:
         except Exception as e:
             news_by_stock[name] = []
             print(f"[news] {name} 수집 실패: {e}")
+        time.sleep(_REQUEST_INTERVAL_SEC)
     return news_by_stock
 
 

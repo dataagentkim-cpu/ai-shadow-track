@@ -3,7 +3,12 @@ from datetime import datetime
 
 import benchmark
 import config
-from data_collector import get_index_levels, get_universe_snapshot
+from data_collector import (
+    assert_before_market_open,
+    get_index_levels,
+    get_last_completed_trading_day,
+    get_universe_snapshot,
+)
 from db import get_connection, init_db
 from llm_judge import judge
 from news_collector import collect_market_news, collect_shortlist_news
@@ -52,21 +57,24 @@ def _log_ai_decisions(conn, week_id: str, date: str, decisions: list[dict]):
 
 
 def run_decision(date: str | None = None):
-    """판단 단계: 장 시작 전(월요일 종가+뉴스 기준)에 실행. 아직 체결/벤치마크는 안 한다."""
-    date = date or datetime.now().strftime("%Y-%m-%d")
-    week_id = _week_id(date)
-    print(f"[run_decision] {date} ({week_id}) 판단 시작")
+    """판단 단계: 장 시작 전에 실행하며, 실행 시각의 'latest'가 아니라 직전 완료된 거래일
+    종가로 날짜를 명시 고정한다 (공휴일이 껴도 거래일 캘린더 기준으로 자동으로 건너뜀).
+    아직 체결/벤치마크는 하지 않는다."""
+    assert_before_market_open()
+    decision_date = get_last_completed_trading_day(date)
+    week_id = _week_id(decision_date)
+    print(f"[run_decision] 판단 기준일={decision_date} ({week_id}) 판단 시작")
 
     init_db()
     conn = get_connection()
 
     print("[1/4] 유니버스 스냅샷 수집")
     universe = get_universe_snapshot()
-    _log_universe_snapshot(conn, week_id, date, len(universe))
+    _log_universe_snapshot(conn, week_id, decision_date, len(universe))
     conn.commit()
 
     print("[2/4] 정량 스크리너 실행")
-    shortlist_df, screener_output_df = build_shortlist(universe, week_id)
+    shortlist_df, screener_output_df = build_shortlist(universe, week_id, decision_date)
     _log_screener_output(conn, screener_output_df)
     conn.commit()
     print(f"  shortlist {len(shortlist_df)}개 확정")
@@ -81,13 +89,13 @@ def run_decision(date: str | None = None):
         columns={"Code": "stock_code", "Name": "stock_name"}
     ).to_dict("records")
     decisions = judge(shortlist_records, news_by_stock, market_news)
-    _log_ai_decisions(conn, week_id, date, decisions)
+    _log_ai_decisions(conn, week_id, decision_date, decisions)
     conn.commit()
     conn.close()
     print(f"  {len(decisions)}개 종목 판단 완료")
 
     print("[run_decision] 완료")
-    return {"week_id": week_id, "date": date, "decisions": decisions}
+    return {"week_id": week_id, "date": decision_date, "decisions": decisions}
 
 
 def run_execution(date: str | None = None):
@@ -105,11 +113,13 @@ def run_execution(date: str | None = None):
 
 
 def run(date: str | None = None):
-    """판단+체결을 한번에 (수동 테스트/일회성 실행용). 실서비스에서는 run_decision과
-    run_execution을 장 시작 전/후로 나눠서 따로 스케줄한다 (telegram_bot.py 참조)."""
-    decision = run_decision(date)
-    execution = run_execution(date)
-    return {**decision, **execution}
+    """CLI 수동 실행 진입점. 판단만 실행한다 — look-ahead 편향 방지를 위해 판단과 체결은
+    반드시 시간 간격을 두고 분리해야 하므로, 이 함수는 체결/벤치마크를 절대 자동으로
+    이어서 실행하지 않는다 (성과 기록 오염 방지). 체결은 장 시작 후 run_execution()을
+    별도로 호출할 것 — 실서비스에서는 telegram_bot.py의 decision_job/execution_job이
+    각각 다른 시각에 이 둘을 스케줄한다."""
+    print("[run] 판단만 실행합니다. 체결/벤치마크는 장 시작 후 run_execution()을 따로 호출하세요.")
+    return run_decision(date)
 
 
 if __name__ == "__main__":

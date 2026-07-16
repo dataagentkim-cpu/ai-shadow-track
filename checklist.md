@@ -10,11 +10,15 @@
 - [x] LLM 블라인드 판단 (llm_judge.py, claude-sonnet-5) - 기존 다른 프로젝트(.env)에 있던 ANTHROPIC_API_KEY 재사용해 실제 호출 검증 완료
 - [x] 3파전 벤치마크 스냅샷 (benchmark.py) - 실제 데이터로 검증 완료
 - [x] 주간 오케스트레이터 (run_weekly.py)
+- [x] Look-ahead 편향 제거: 판단(직전 완료 거래일 종가, `get_last_completed_trading_day`로 명시 고정)과 체결(다음 거래일 시가) 시점 분리 + 장전 가드(`assert_before_market_open`)
+- [x] `run_weekly.run()`은 판단만 실행, 체결/벤치마크 자동 실행 금지 (성과 기록 오염 방지 안전장치)
+- [x] 거래비용 반영: 슬리피지 0.3%(진입·청산 양쪽 불리한 방향), 매매수수료 0.015%(양방향), 증권거래세 0.20%(매도 시, 2026년 기준 코스피/코스닥 공통)
+- [x] 내 보유(①)·AI(②)·지수(③) 세 트랙 모두 `benchmark._get_open_price()`로 통일해 같은 거래일 시가 기준에서 출발
 
 ## 텔레그램 Q&A + 상시 구동
 - [x] telegram_bot.py (/performance /latest /history /why /holdings) - 실제 서버에서 동작 확인
 - [x] BotFather로 봇 생성, TELEGRAM_BOT_TOKEN/chat_id 발급 및 반영
-- [x] 주간 사이클을 GitHub Actions 크론이 아니라 봇 내장 JobQueue(run_daily, 매주 월요일 07:00 KST)로 실행 — running-coach-bot과 동일 패턴
+- [x] 주간 사이클을 GitHub Actions 크론이 아니라 봇 내장 JobQueue(decision_job 화 07:00 KST, execution_job 화 09:05 KST)로 실행 — running-coach-bot과 동일 패턴
 - [x] AWS EC2(t2.micro, 3.35.236.206 — running-coach-bot과 같은 서버에 공존)에 systemd 서비스(`shadowtrack.service`)로 상시 구동 등록
 
 ## 자동화 (GitHub Actions)

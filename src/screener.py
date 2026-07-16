@@ -22,8 +22,11 @@ def _dedupe_common_preferred(df: pd.DataFrame) -> pd.DataFrame:
     return df.drop_duplicates(subset="_code_prefix", keep="first").drop(columns="_code_prefix")
 
 
-def build_shortlist(universe: pd.DataFrame, week_id: str) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Returns: (shortlist_df, screener_output_df) - 후자는 후보군 전체 기록용"""
+def build_shortlist(
+    universe: pd.DataFrame, week_id: str, decision_date: str | None = None
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Returns: (shortlist_df, screener_output_df) - 후자는 후보군 전체 기록용.
+    decision_date를 명시하면 모멘텀 이력 조회가 실행 시각이 아니라 그 날짜 기준으로 고정된다."""
     hygiene_ok = _hygiene_filter(universe)
     deduped = _dedupe_common_preferred(hygiene_ok)
 
@@ -33,7 +36,7 @@ def build_shortlist(universe: pd.DataFrame, week_id: str) -> tuple[pd.DataFrame,
     price_series = {}
     for code in liquidity_ranked["Code"]:
         try:
-            hist = get_price_history(code, config.CORR_LOOKBACK_DAYS)
+            hist = get_price_history(code, config.CORR_LOOKBACK_DAYS, today=decision_date)
             if len(hist) >= config.CORR_LOOKBACK_DAYS * 0.6:
                 price_series[code] = hist
         except Exception:

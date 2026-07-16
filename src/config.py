@@ -23,6 +23,8 @@ SHORTLIST_SIZE = 40
 TARGET_STOCK_MIN = 8
 TARGET_STOCK_MAX = 12
 LLM_MODEL = "claude-sonnet-5"
+# 주 단위 판단 변화가 무작위가 아니라 렌즈·시장에서 나오도록 낮게 고정 (SPEC.md "LLM 판단 규칙")
+LLM_TEMPERATURE = 0.25
 
 # --- 뉴스 ---
 NAVER_CLIENT_ID = os.getenv("NAVER_CLIENT_ID")
@@ -39,9 +41,17 @@ KOSDAQ_DIVIDEND_YIELD_APPROX_PCT = 1.0
 
 # --- 트랙 ID ---
 TRACK_MY_HOLDINGS = "my_holdings"
-TRACK_AI_BLIND = "ai_blind"
+TRACK_AI_BLIND = "ai_blind"  # 구버전 단일 AI 트랙 - SPEC.md 4렌즈 확장 이후로는 신규 기록 안 함 (과거 로그만 남음)
 TRACK_INDEX = "index"
 TRACK_EQUAL_WEIGHT = "equal_weight"  # ④ 그 주 shortlist를 LLM 판단 없이 동일가중 보유 (LLM 기여도 격리용)
+
+# ②a~②d: SPEC.md "투자 렌즈 정의" 4렌즈 병렬. 각자 독립 시스템 프롬프트 + 독립 stateful 포트.
+TRACK_VALUE = "value_ai"
+TRACK_MOMENTUM = "momentum_ai"
+TRACK_QUALITY = "quality_ai"
+TRACK_FREE = "free_ai"
+LENS_TRACKS = [TRACK_VALUE, TRACK_MOMENTUM, TRACK_QUALITY, TRACK_FREE]
+LENS_BY_TRACK = {TRACK_VALUE: "value", TRACK_MOMENTUM: "momentum", TRACK_QUALITY: "quality", TRACK_FREE: "free"}
 
 # --- 체결(실행) ---
 # AI 트랙은 매주 완전 리밸런싱을 가정하므로, 판단(직전 완료 거래일 종가+뉴스)과 체결(다음

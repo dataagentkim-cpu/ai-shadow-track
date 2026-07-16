@@ -3,6 +3,7 @@ from datetime import datetime
 
 import benchmark
 import config
+import dart_client
 import risk_metrics
 from data_collector import (
     assert_before_market_open,
@@ -30,16 +31,37 @@ def _log_universe_snapshot(conn, week_id: str, date: str, universe_count: int):
     )
 
 
-def _log_screener_output(conn, screener_output_df):
+def _fetch_shortlist_financials(shortlist_df, decision_date: str) -> dict:
+    """shortlist 종목에 한해 DART 재무지표(ROE/부채비율/영업이익률)를 배치 조회하고,
+    그 시점 시가·발행주식수와 결합해 PER/PBR까지 계산한다. shortlist 밖 종목은 조회하지 않는다
+    (④ 격리 원칙과 마찬가지로, 필요한 곳에만 쓰는 깔때기 원칙 유지)."""
+    codes = shortlist_df["Code"].tolist()
+    financials = dart_client.get_financial_metrics(codes, decision_date)
+
+    result = {}
+    for _, r in shortlist_df.iterrows():
+        fin = financials.get(r["Code"])
+        if not fin:
+            continue
+        val = dart_client.compute_valuation_ratios(fin, price=r["Close"], shares_outstanding=r["Stocks"])
+        result[r["Code"]] = {**fin, **val}
+    return result
+
+
+def _log_screener_output(conn, screener_output_df, financials_by_code: dict | None = None):
+    financials_by_code = financials_by_code or {}
     for _, r in screener_output_df.iterrows():
+        fin = financials_by_code.get(r["Code"], {})
         conn.execute(
             """INSERT INTO screener_output
-               (week_id, stock_code, stock_name, market_cap, trading_value, momentum_score, cluster_id, rank, included_in_shortlist, exclude_reason)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               (week_id, stock_code, stock_name, market_cap, trading_value, momentum_score, cluster_id, rank,
+                included_in_shortlist, exclude_reason, per, pbr, roe, debt_ratio, op_margin)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 r["week_id"], r["Code"], r["Name"], int(r["Marcap"]), int(r["Amount"]),
                 float(r["momentum_score"]), int(r["cluster_id"]) if r["cluster_id"] is not None else None,
                 int(r["rank"]), int(bool(r["included_in_shortlist"])), r["exclude_reason"],
+                fin.get("per"), fin.get("pbr"), fin.get("roe"), fin.get("debt_ratio"), fin.get("op_margin"),
             ),
         )
 
@@ -110,10 +132,15 @@ def run_decision(date: str | None = None):
 
     print("[2/4] 정량 스크리너 실행")
     shortlist_df, screener_output_df = build_shortlist(universe, week_id, decision_date)
-    _log_screener_output(conn, screener_output_df)
+    print(f"  shortlist {len(shortlist_df)}개 확정")
+
+    print("[2b/4] DART 재무지표 조회 (shortlist 종목만 - ROE/부채비율/영업이익률/PER/PBR)")
+    financials_by_code = _fetch_shortlist_financials(shortlist_df, decision_date)
+    print(f"  재무 데이터 확보: {len(financials_by_code)}/{len(shortlist_df)}개")
+
+    _log_screener_output(conn, screener_output_df, financials_by_code)
     _log_equal_weight_decisions(conn, week_id, decision_date, shortlist_df)
     conn.commit()
-    print(f"  shortlist {len(shortlist_df)}개 확정")
 
     print("[3/4] shortlist 뉴스 + 시장 전반 뉴스 수집 (판단 시각 이후 게시분은 PIT 필터로 배제)")
     stock_names = shortlist_df["Name"].tolist()

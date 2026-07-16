@@ -40,8 +40,15 @@
 - [x] 통합 테스트: 실제 시장 데이터로 2주치 전체 사이클(스크리너→shortlist→④균등편입→가짜 판단→벤치마크→위험지표)을 로컬에서 직접 실행해 턴오버/비용/배당 계산을 손으로 검산해 확인
 - [x] (부수 발견) screener.py의 상관관계 행렬 구성 버그 수정 — 종목별 거래일 수가 달라 `.values`로 합치면 길이불일치로 크래시하던 것을, 날짜 인덱스를 유지한 `pd.concat`으로 교체
 
+## DART 재무지표 연결 (SPEC.md 4렌즈 확장 선행 작업)
+- [x] `dart_client.get_financial_metrics()` — DART `fnlttMultiAcnt.json`(다중회사 재무제표)에서 매출액/영업이익/당기순이익/자산/부채/자본 배치 조회, ROE·부채비율·영업이익률 계산 (dart-ma-screener의 계정명 매핑 패턴 재사용)
+- [x] `dart_client.compute_valuation_ratios()` — 그 시점 시가·발행주식수와 결합해 PER/PBR 계산 (음수 순이익이면 PER은 None, 지어내지 않음)
+- [x] `screener_output` 테이블에 per/pbr/roe/debt_ratio/op_margin 컬럼 추가 + 마이그레이션, `run_weekly.run_decision()`에서 shortlist 종목에 한해 조회·기록
+- [x] 실제 shortlist(40종목)로 커버리지 검증 — 100% (40/40), 값도 합리적 (예: 손실기업 PER 자동 N/A 처리)
+- [x] 알려진 데이터 해석 주의사항 발견: 은행/금융지주는 예금이 부채로 잡혀 부채비율이 1000%대로 나옴(회계상 정상, 오독 주의), 지주회사는 매출액이 작아 영업이익률이 비정상적으로 커 보일 수 있음
+- [ ] **다음 단계 (보류 중)**: SPEC.md의 ②a~②d 4렌즈 병렬 확장 — 이 재무지표를 가치(②a)/퀄리티(②c) 렌즈 프롬프트의 실제 인풋으로 연결. `config.py`(TRACK_VALUE 등)/`db.py`(weekly_perspective 컬럼)는 이미 준비됨, `llm_judge.py`/`run_weekly.py`/`benchmark.py`/`risk_metrics.py`/`telegram_bot.py`는 아직 단일 트랙 상태로 되돌려놓음 (재무 연결 없이 먼저 만들면 로그를 버려야 해서 순서를 바꿈)
+
 ## 미해결/알려진 제약 (사후 검토 필요)
-- [ ] 밸류에이션(PER/PBR) 데이터 소스 부재 - pykrx가 KRX 로그인 요구로 막혀 모멘텀+유동성만으로 랭킹 중
 - [ ] 지주-자회사 중복 제거는 미구현 (보통주/우선주 쌍만 제거)
 - [ ] P1 사후검증 리포트, 대시보드는 이번 빌드 범위 밖
 - [ ] t2.micro를 러닝코치 봇과 공유 중 (RAM 951MB) — 두 봇 다 가벼운 편이라 문제 없었지만, 주간 사이클(스크리너 히스토리 조회 150건 + DART 조회 최대 90여건) 실행 중 메모리/시간 사용량은 아직 서버 실전 실행에서 실측 안 함

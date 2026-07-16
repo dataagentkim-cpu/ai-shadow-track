@@ -116,3 +116,49 @@
   크래시하는 버그였음. 오늘 이전엔 우연히 안 걸렸을 뿐 — 과거 날짜로 스크리너를 돌리자마자 재현됨.
   날짜 인덱스를 유지한 `pd.concat`으로 교체해 인덱스 기준 정렬되도록 수정(코드 자체 인과관계는 이번 작업과
   무관하지만, 통합 테스트 중 발견해 바로 고침).
+
+## SPEC.md 도입 + 4렌즈 확장 착수했다가 순서 변경 (2026-07-16 7차)
+- 사용자가 `shadow-track-build-brief.md`의 확장판(4렌즈 병렬, 체결 시점 규칙, 평가 방법론 A-D, 해석 규율까지
+  담긴 버전)을 `SPEC.md`로 프로젝트 루트에 저장해달라고 요청 — 이제부터 이 문서가 기준 설계 문서. 채팅에
+  붙여넣은 텍스트가 인코딩이 깨져있어서(mojibake) 로컬 원본 파일(`~/Downloads/shadow-track-build-brief.md`)을
+  직접 Read해서 저장함 — 채팅에 붙여넣은 텍스트를 신뢰하지 말고 항상 원본 파일을 참조할 것.
+- SPEC.md 요청에 따라 ②a(가치)/②b(모멘텀)/②c(퀄리티)/②d(자유형) 4렌즈 병렬 구조를 만들기 시작함
+  (config.py에 TRACK_VALUE 등 4개 트랙 상수·LLM_TEMPERATURE, db.py에 decisions.weekly_perspective 컬럼,
+  llm_judge.py를 4렌즈별 시스템 프롬프트로 재작성, run_weekly.py를 4렌즈 루프로 개편).
+- **작업 도중 사용자가 순서를 바꿈**: 가치·퀄리티 렌즈는 SPEC.md상 PER/PBR/ROE/부채비율 등 실제 재무 수치로
+  판단해야 하는데, 그 데이터가 아직 파이프라인에 없다는 걸 지적(직전 턴에서 이미 확인된 사실). 재무 연결 없이
+  4렌즈부터 만들면 가치·퀄리티 렌즈 로그를 나중에 버려야 하니, DART 재무 연결을 먼저 끝내고 검증한 뒤 4렌즈를
+  재개하기로 함.
+- **롤백 처리**: `llm_judge.py`는 `git checkout`으로 마지막 배포 버전으로 완전히 되돌림. `run_weekly.py`는
+  DART 재무 조회/로깅 부분(안전하고 완결된 부분)만 남기고, 4렌즈 판단 루프 부분(`_get_previous_lens_portfolio`,
+  `_log_lens_decisions`, `judge(lens, ...)` 루프)은 이전 단일 트랙 버전(`_get_previous_ai_portfolio`,
+  `_log_ai_decisions`, 단일 `judge()` 호출)으로 되돌림. **이유**: 이 상태로 커밋·배포했으면 서버가 다음
+  화요일 결정 단계에서 `TRACK_VALUE` 등 새 트랙에 로그를 쓰는데, `benchmark.py`/`risk_metrics.py`/
+  `telegram_bot.py`는 여전히 옛날 단일 트랙(`ai_blind`)만 봐서 `_snapshot_rebalanced_track`이 "이번 주
+  판단 없음" RuntimeError로 크래시했을 것. 아직 아무것도 커밋·배포 안 한 상태였어서 안전하게 되돌릴 수 있었음.
+- `config.py`의 `TRACK_VALUE`/`TRACK_MOMENTUM`/`TRACK_QUALITY`/`TRACK_FREE`/`LENS_TRACKS`/`LENS_BY_TRACK`/
+  `LLM_TEMPERATURE`와 `db.py`의 `decisions.weekly_perspective` 컬럼은 **일부러 남겨둠** (지금은 아무도 참조
+  안 하지만 곧 재개할 작업의 준비물이라 되돌리지 않음 — checklist.md에 "다음 단계"로 명시해둠).
+
+## DART 재무지표 연결 (2026-07-16 7차, 4렌즈 재개 전 선행 작업)
+- `dart_client.get_financial_metrics(stock_codes, as_of)`: DART `fnlttMultiAcnt.json`(다중회사 주요 재무
+  항목)을 배치 조회(최대 80개씩, dart-ma-screener의 `BATCH_SIZE=80` 관례 그대로 재사용). 연결재무제표(CFS)
+  우선, 없으면 별도재무제표(OFS)로 폴백. 매출액/영업이익/당기순이익/자산총계/부채총계/자본총계를 파싱해
+  ROE(순이익/자본), 부채비율(부채/자본), 영업이익률(영업이익/매출액) 계산. 계정명 매칭 세트는
+  dart-ma-screener의 `financial_data.py` 패턴 그대로 재사용.
+- `dart_client.compute_valuation_ratios(financials, price, shares_outstanding)`: EPS=순이익/발행주식수,
+  BPS=자본/발행주식수를 구한 뒤 그 시점 시가와 결합해 PER/PBR 계산. 발행주식수는 FDR `StockListing`의
+  `Stocks` 컬럼(이미 유니버스 스냅샷에 있음)을 그대로 씀. 순이익이 음수면 PER=None(적자 기업 PER은 의미
+  없으므로 억지로 음수/이상값 반환하지 않음).
+- `_safe_fiscal_year()`(배당 조회 때 만든 PIT 안전장치)를 재무지표 조회에도 그대로 재사용 — 사업보고서
+  법정 제출기한(3월 말) 기준으로 아직 공시 안 됐을 연도는 건너뜀.
+- `screener_output` 테이블에 `per`/`pbr`/`roe`/`debt_ratio`/`op_margin` 컬럼 추가(마이그레이션 포함).
+  `run_weekly.run_decision()`이 shortlist 확정 직후(`_fetch_shortlist_financials`) DART를 조회해서 함께
+  기록 — shortlist 밖 110여개 후보는 조회 안 함(깔때기 원칙 유지, 불필요한 API 호출 안 함).
+- **실제 검증**: 실 shortlist(40종목)로 커버리지 테스트 → 40/40(100%), 소요시간 2.2초(배치 덕분). PER/PBR
+  값도 상식과 부합 — 손실 기업(기가레인·모나미 등)은 자동으로 PER=N/A, 최근 급등한 성장주(에이피알·
+  한미반도체 등)는 PER/PBR 모두 높게 나옴.
+- **알아둘 데이터 함정**: 은행/금융지주(KB금융·하나금융지주·신한지주)는 예금이 회계상 부채로 잡혀 부채비율이
+  1000%를 넘게 나옴 — 실제로 위험한 게 아니라 업종 특성. 지주회사(SK스퀘어 등)는 자체 매출액이 작아서
+  영업이익률이 100%를 훌쩍 넘는 등 비정상적으로 보일 수 있음. 나중에 퀄리티 렌즈 프롬프트를 만들 때 이
+  두 가지를 그대로 "나쁜/이상한 신호"로 오독하지 않게 안내가 필요함 (아직 프롬프트에는 반영 안 함).

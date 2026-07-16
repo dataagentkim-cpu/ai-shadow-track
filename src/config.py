@@ -23,8 +23,8 @@ SHORTLIST_SIZE = 40
 TARGET_STOCK_MIN = 8
 TARGET_STOCK_MAX = 12
 LLM_MODEL = "claude-sonnet-5"
-# 주 단위 판단 변화가 무작위가 아니라 렌즈·시장에서 나오도록 낮게 고정 (SPEC.md "LLM 판단 규칙")
-LLM_TEMPERATURE = 0.25
+# claude-sonnet-5는 temperature 파라미터 자체를 받지 않음(비-기본값 전달 시 400) — SPEC.md의
+# "temperature 0.2~0.3 고정" 요구는 API로 구현 불가. 판단 일관성은 프롬프트 규율로 대체.
 
 # --- 뉴스 ---
 NAVER_CLIENT_ID = os.getenv("NAVER_CLIENT_ID")

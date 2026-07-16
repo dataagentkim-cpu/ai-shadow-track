@@ -162,3 +162,49 @@
   1000%를 넘게 나옴 — 실제로 위험한 게 아니라 업종 특성. 지주회사(SK스퀘어 등)는 자체 매출액이 작아서
   영업이익률이 100%를 훌쩍 넘는 등 비정상적으로 보일 수 있음. 나중에 퀄리티 렌즈 프롬프트를 만들 때 이
   두 가지를 그대로 "나쁜/이상한 신호"로 오독하지 않게 안내가 필요함 (아직 프롬프트에는 반영 안 함).
+
+## 4렌즈 확장 재개 + 실전 배선 완료 (2026-07-16 8차)
+DART 재무 연결 검증이 끝난 뒤 보류했던 4렌즈(②a가치/②b모멘텀/②c퀄리티/②d자유형) 확장을 재개해서
+`llm_judge.py`→`run_weekly.py`→`benchmark.py`→`risk_metrics.py`→`telegram_bot.py` 전 파이프라인을
+일관되게 다시 연결했다.
+
+- **`llm_judge.py` 재작성**: 4개 시스템 프롬프트(공통 프레이밍 `_COMMON_FRAMING` 공유)에 실제 DART
+  재무지표(PER/PBR/ROE/부채비율/영업이익률)를 종목별로 삽입. 퀄리티 렌즈뿐 아니라 공통 프레이밍에도
+  "은행/지주 부채비율·영업이익률 왜곡" 예외 안내를 넣어 4개 렌즈 전부가 이 함정을 공유해서 인지하게 함
+  (가치 렌즈도 PER/PBR을 실제 근거로 쓰므로 같은 함정에 노출됨).
+- **`temperature` 파라미터 제거 (블로킹 버그)**: `config.LLM_TEMPERATURE=0.25`를 그대로 `client.messages.create()`에
+  넘겼더니 `400 temperature is deprecated for this model` — claude-sonnet-5는 Opus 4.7+ 세대와 마찬가지로
+  `temperature`/`top_p`/`top_k`를 비-기본값으로 넘기면 거부한다. SPEC.md의 "temperature 0.2~0.3 고정" 요구는
+  API로 구현 불가능하다는 뜻 — `LLM_TEMPERATURE` 상수를 완전히 제거하고 판단 일관성은 프롬프트 규율
+  (`_COMMON_FRAMING`의 앵커링 금지·전량유지 허용 문구)로만 확보하기로 함. 사용자에게 이 제약을 명시적으로
+  보고함.
+- **자유형(②d) 렌즈 이중 인코딩 버그 (실전 테스트로 발견)**: 프로덕션 DB에 대고 실제 `run_decision()` 전체
+  사이클을 돌리는 통합 테스트 중, 자유형 렌즈에서만 `decisions` 필드가 배열이 아니라 전체 JSON을
+  문자열로 감싼 값으로 돌아와 `_log_lens_decisions`가 문자를 하나씩 순회하며 크래시함
+  (`TypeError: string indices must be integers`). `weekly_perspective` 필드가 섞인 좀 더 복잡한 스키마에서만
+  발생 — 재현 확률은 낮지만(반복 호출 3/3은 정상) 실사용에서 걸릴 수 있는 실제 결함이었음. `_DECISION_TOOL`/
+  `_FREE_DECISION_TOOL` 양쪽에 `additionalProperties: false`(최상위+배열 아이템 스키마)와 `strict: true`를
+  추가해 모델 출력이 스키마를 정확히 따르도록 강제 — 수정 후 자유형 렌즈만 3회 반복 호출해 전부 정상 확인.
+- **`run_weekly.py`**: `_get_previous_ai_portfolio`/`_log_ai_decisions`(단일 트랙 하드코딩)를
+  `_get_previous_lens_portfolio(conn, track_id)`/`_log_lens_decisions(conn, ..., track_id, decisions, weekly_perspective)`로
+  일반화. `run_decision()`의 `shortlist_records`에 `_fetch_shortlist_financials`로 이미 수집된 재무지표를
+  종목별로 결합한 뒤 `config.LENS_TRACKS` 4개를 순회하며 각자 자기 자신의 지난주 포트폴리오만 참고해 판단.
+  반환값이 `decisions`(단일 리스트) → `decisions_by_lens`(트랙ID→리스트 dict)로 바뀜.
+- **`benchmark.py`**: `snapshot_ai_track()`(단일 트랙 전용) 제거, `snapshot_all()`이 `config.LENS_TRACKS` 4개를
+  기존 공유 함수 `_snapshot_rebalanced_track`으로 순회 처리하도록 확장(④·①·③과 동일한 체결/비용 규칙 공유
+  유지). `get_alpha_spread()`가 `track_id` 파라미터를 받도록 바뀌어 4개 렌즈 각각의 ②x−④ 스프레드를
+  독립적으로 조회 가능.
+- **`risk_metrics.py`**: `rebalanced_tracks`/트랙 순회 목록에 `ai_blind` 대신 `config.LENS_TRACKS` 4개 반영.
+- **`telegram_bot.py`**: `_TRACK_LABEL`에 4개 렌즈 라벨(②a~d) 추가, 구버전 `ai_blind`는 "② AI(구버전)"로
+  남겨 과거 로그 조회 시에도 라벨이 깨지지 않게 함. `/latest`는 렌즈별로 메시지를 나눠 전송(자유형은
+  `weekly_perspective` 선언도 함께 표시), `/history`는 트랙 목록을 동적으로 조립(하드코딩된 4컬럼 → 7컬럼
+  일반화), `/alpha`는 4개 렌즈 각각의 스프레드를 순회 전송. `decision_job`도 `decisions_by_lens` 구조에
+  맞춰 렌즈별로 판단 요약을 나눠 표시하도록 수정.
+- **프로덕션 DB 대상 실전 통합 테스트**: 사용자 승인 하에 `data/shadow_track.db`를 미리 백업한 뒤(안전장치),
+  장전 가드(`assert_before_market_open`)만 이번 검증 1회에 한해 우회해서(코드는 그대로 두고 프로세스
+  내 몽키패치로만) 실제 스크리너(40종목)→DART(40/40 커버리지)→뉴스→LLM 4회 호출→`run_execution()`→
+  `risk_metrics.compute_and_log()`까지 전체 사이클을 실행. 4개 렌즈 전부 정상적으로 종목을 골랐고(가치=기아/현대차
+  중심, 모멘텀=반도체 장비주 중심, 퀄리티=SK하이닉스/삼성전자 중심, 자유형="반도체/AI 하드웨어 슈퍼사이클+
+  최소 퀄리티 필터" 관점 선언), `snapshot_all`/`get_alpha_spread`/`risk_metrics` 모두 7개 트랙(①+④렌즈+③+④)에
+  대해 정상 기록됨을 확인. 이 실행으로 실제 주차(2026-W29)에 진짜 판단 로그가 하나 남았음 — 다음 화요일
+  실전 배치와 겹치지 않는지 배포 전에 확인 필요.

@@ -46,7 +46,12 @@
 - [x] `screener_output` 테이블에 per/pbr/roe/debt_ratio/op_margin 컬럼 추가 + 마이그레이션, `run_weekly.run_decision()`에서 shortlist 종목에 한해 조회·기록
 - [x] 실제 shortlist(40종목)로 커버리지 검증 — 100% (40/40), 값도 합리적 (예: 손실기업 PER 자동 N/A 처리)
 - [x] 알려진 데이터 해석 주의사항 발견: 은행/금융지주는 예금이 부채로 잡혀 부채비율이 1000%대로 나옴(회계상 정상, 오독 주의), 지주회사는 매출액이 작아 영업이익률이 비정상적으로 커 보일 수 있음
-- [ ] **다음 단계 (보류 중)**: SPEC.md의 ②a~②d 4렌즈 병렬 확장 — 이 재무지표를 가치(②a)/퀄리티(②c) 렌즈 프롬프트의 실제 인풋으로 연결. `config.py`(TRACK_VALUE 등)/`db.py`(weekly_perspective 컬럼)는 이미 준비됨, `llm_judge.py`/`run_weekly.py`/`benchmark.py`/`risk_metrics.py`/`telegram_bot.py`는 아직 단일 트랙 상태로 되돌려놓음 (재무 연결 없이 먼저 만들면 로그를 버려야 해서 순서를 바꿈)
+- [x] **SPEC.md의 ②a~②d 4렌즈 병렬 확장 완료** — 가치(②a)/퀄리티(②c) 렌즈가 실제 PER/PBR/ROE/부채비율/영업이익률을 프롬프트 인풋으로 받음. `llm_judge.py`(4개 시스템 프롬프트 + 은행/지주 예외 안내 공통화) → `run_weekly.py`(4렌즈 판단 루프, `decisions_by_lens` 반환) → `benchmark.py`(`snapshot_all`/`get_alpha_spread` 4렌즈 대응) → `risk_metrics.py`(4렌즈+④ 루프) → `telegram_bot.py`(`/latest` `/history` `/alpha` 4렌즈 대응) 전체 재배선 완료
+
+## 4렌즈 확장 중 발견/수정된 버그
+- [x] claude-sonnet-5는 `temperature`/`top_p`/`top_k`를 비-기본값으로 받지 않음(400 에러) — `config.LLM_TEMPERATURE` 제거, SPEC.md의 "temperature 고정" 요구는 API로 불가능함을 확인·기록
+- [x] 자유형(②d) 렌즈에서 `decisions` 필드가 배열 대신 전체 JSON을 문자열로 이중 인코딩해서 반환하는 결함 발견(실전 통합 테스트 중) — 두 tool 정의에 `additionalProperties: false` + `strict: true` 추가로 해결, 재현 테스트 3/3 통과로 확인
+- [x] 프로덕션 DB 대상 `run_decision()`→`run_execution()`→`risk_metrics` 전체 사이클 실전 통합 테스트 완료 (2026-W29 실제 판단 로그 1회 생성됨 — 다음 화요일 실전 배치(2026-07-21, 2026-W30)와 주차가 달라 겹치지 않음을 확인함)
 
 ## 미해결/알려진 제약 (사후 검토 필요)
 - [ ] 지주-자회사 중복 제거는 미구현 (보통주/우선주 쌍만 제거)

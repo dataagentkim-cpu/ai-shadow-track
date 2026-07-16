@@ -23,9 +23,13 @@ _ALLOWED_CHAT_ID = os.getenv("TELEGRAM_ALLOWED_CHAT_ID")
 
 _TRACK_LABEL = {
     config.TRACK_MY_HOLDINGS: "① 내 보유",
-    config.TRACK_AI_BLIND: "② AI",
+    config.TRACK_VALUE: "②a 가치",
+    config.TRACK_MOMENTUM: "②b 모멘텀",
+    config.TRACK_QUALITY: "②c 퀄리티",
+    config.TRACK_FREE: "②d 자유형",
     config.TRACK_INDEX: "③ 지수",
     config.TRACK_EQUAL_WEIGHT: "④ 동일가중",
+    config.TRACK_AI_BLIND: "② AI(구버전)",
 }
 
 
@@ -66,7 +70,7 @@ async def cmd_performance(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("아직 벤치마크 스냅샷이 없습니다. run_weekly를 먼저 실행하세요.")
         return
 
-    lines = [f"3파전 수익률 (기준일: {rows[0]['snapshot_date']})\n"]
+    lines = [f"트랙별 최신 수익률 (기준일: {rows[0]['snapshot_date']})\n"]
     for r in sorted(rows, key=lambda x: _TRACK_LABEL.get(x["track_id"], x["track_id"])):
         label = _TRACK_LABEL.get(r["track_id"], r["track_id"])
         lines.append(f"{label}: {r['return_pct']:+.2%} ({r['portfolio_value']:,.0f}원)")
@@ -77,28 +81,37 @@ async def cmd_latest(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await _guard(update):
         return
     conn = get_connection()
-    latest_week = conn.execute(
-        "SELECT week_id FROM decisions WHERE track_id = ? ORDER BY decision_date DESC LIMIT 1",
-        (config.TRACK_AI_BLIND,),
-    ).fetchone()
-    if not latest_week:
-        await update.message.reply_text("아직 AI 판단 로그가 없습니다.")
-        conn.close()
-        return
 
-    rows = conn.execute(
-        "SELECT * FROM decisions WHERE track_id = ? AND week_id = ? ORDER BY target_weight DESC",
-        (config.TRACK_AI_BLIND, latest_week["week_id"]),
-    ).fetchall()
+    any_sent = False
+    for track_id in config.LENS_TRACKS:
+        latest_week = conn.execute(
+            "SELECT week_id FROM decisions WHERE track_id = ? ORDER BY decision_date DESC LIMIT 1",
+            (track_id,),
+        ).fetchone()
+        if not latest_week:
+            continue
+        any_sent = True
+
+        rows = conn.execute(
+            "SELECT * FROM decisions WHERE track_id = ? AND week_id = ? ORDER BY target_weight DESC",
+            (track_id, latest_week["week_id"]),
+        ).fetchall()
+
+        label = _TRACK_LABEL.get(track_id, track_id)
+        lines = [f"{label} 판단 ({latest_week['week_id']})"]
+        if track_id == config.TRACK_FREE and rows and rows[0]["weekly_perspective"]:
+            lines.append(f"이번 주 관점: {rows[0]['weekly_perspective']}")
+        lines.append("")
+        for r in rows:
+            lines.append(
+                f"- {r['stock_name']} [{r['action']}] {r['target_weight']:.1f}% (확신도 {r['conviction']})\n"
+                f"    {r['rationale']}"
+            )
+        await update.message.reply_text("\n".join(lines))
+
     conn.close()
-
-    lines = [f"AI 블라인드 판단 ({latest_week['week_id']})\n"]
-    for r in rows:
-        lines.append(
-            f"- {r['stock_name']} [{r['action']}] {r['target_weight']:.1f}% (확신도 {r['conviction']})\n"
-            f"    {r['rationale']}"
-        )
-    await update.message.reply_text("\n".join(lines))
+    if not any_sent:
+        await update.message.reply_text("아직 AI 판단 로그가 없습니다.")
 
 
 async def cmd_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -115,16 +128,15 @@ async def cmd_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for r in rows:
         by_date.setdefault(r["snapshot_date"], {})[r["track_id"]] = r["return_pct"]
 
-    lines = ["최근 수익률 추이 (내보유 / AI / 지수 / 동일가중)\n"]
+    track_order = [
+        config.TRACK_MY_HOLDINGS, *config.LENS_TRACKS, config.TRACK_INDEX, config.TRACK_EQUAL_WEIGHT,
+    ]
+    header = " / ".join(_TRACK_LABEL[t] for t in track_order)
+    lines = [f"최근 수익률 추이 ({header})\n"]
     for date in sorted(by_date.keys(), reverse=True)[:8]:
         d = by_date[date]
-        lines.append(
-            f"{date}: "
-            f"{d.get(config.TRACK_MY_HOLDINGS, 0):+.1%} / "
-            f"{d.get(config.TRACK_AI_BLIND, 0):+.1%} / "
-            f"{d.get(config.TRACK_INDEX, 0):+.1%} / "
-            f"{d.get(config.TRACK_EQUAL_WEIGHT, 0):+.1%}"
-        )
+        values = " / ".join(f"{d.get(t, 0):+.1%}" for t in track_order)
+        lines.append(f"{date}: {values}")
     await update.message.reply_text("\n".join(lines))
 
 
@@ -177,26 +189,32 @@ async def cmd_holdings(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_alpha(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """②(AI)가 ④(동일가중 baseline)를 못 이기면 LLM 판단이 값을 못 하는 것 — 그 스프레드."""
+    """②x(각 렌즈)가 ④(동일가중 baseline)를 못 이기면 LLM 판단이 값을 못 하는 것 — 그 스프레드."""
     if not await _guard(update):
         return
     import benchmark
 
-    spread = benchmark.get_alpha_spread()
-    if not spread:
-        await update.message.reply_text("아직 ②/④ 둘 다 스냅샷이 없습니다.")
-        return
+    any_sent = False
+    for track_id in config.LENS_TRACKS:
+        spread = benchmark.get_alpha_spread(track_id)
+        if not spread:
+            continue
+        any_sent = True
 
-    latest = spread[-1]
-    lines = [
-        f"AI(②) vs 동일가중 baseline(④) 스프레드 ({latest['week_id']})\n",
-        f"이번 주: {latest['weekly_spread']:+.2%}",
-        f"누적: {latest['cumulative_spread']:+.2%}\n",
-        "최근 추이 (주간 / 누적):",
-    ]
-    for s in spread[-8:]:
-        lines.append(f"{s['date']}: {s['weekly_spread']:+.2%} / {s['cumulative_spread']:+.2%}")
-    await update.message.reply_text("\n".join(lines))
+        label = _TRACK_LABEL.get(track_id, track_id)
+        latest = spread[-1]
+        lines = [
+            f"{label} vs 동일가중 baseline(④) 스프레드 ({latest['week_id']})\n",
+            f"이번 주: {latest['weekly_spread']:+.2%}",
+            f"누적: {latest['cumulative_spread']:+.2%}\n",
+            "최근 추이 (주간 / 누적):",
+        ]
+        for s in spread[-8:]:
+            lines.append(f"{s['date']}: {s['weekly_spread']:+.2%} / {s['cumulative_spread']:+.2%}")
+        await update.message.reply_text("\n".join(lines))
+
+    if not any_sent:
+        await update.message.reply_text("아직 ②/④ 둘 다 스냅샷이 없습니다.")
 
 
 async def cmd_risk(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -251,9 +269,13 @@ async def decision_job(context: ContextTypes.DEFAULT_TYPE):
     if not _ALLOWED_CHAT_ID:
         return
 
-    lines = [f"이번 주 AI 블라인드 판단 완료 ({result['week_id']}) — 체결은 장 시작 후 반영됩니다\n"]
-    for d in result["decisions"]:
-        lines.append(f"- {d['stock_name']} [{d['action']}] {d['target_weight']:.1f}% (확신도 {d['conviction']})")
+    lines = [f"이번 주 4렌즈 판단 완료 ({result['week_id']}) — 체결은 장 시작 후 반영됩니다\n"]
+    for track_id, decisions in result["decisions_by_lens"].items():
+        label = _TRACK_LABEL.get(track_id, track_id)
+        lines.append(f"[{label}]")
+        for d in decisions:
+            lines.append(f"- {d['stock_name']} [{d['action']}] {d['target_weight']:.1f}% (확신도 {d['conviction']})")
+        lines.append("")
     await context.bot.send_message(chat_id=_ALLOWED_CHAT_ID, text="\n".join(lines))
 
 

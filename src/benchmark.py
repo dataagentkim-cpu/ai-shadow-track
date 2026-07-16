@@ -175,10 +175,6 @@ def _snapshot_rebalanced_track(track_id: str, week_id: str, date: str) -> dict:
     return {"track_id": track_id, "value": value, "return_pct": return_pct}
 
 
-def snapshot_ai_track(week_id: str, date: str) -> dict:
-    return _snapshot_rebalanced_track(config.TRACK_AI_BLIND, week_id, date)
-
-
 def snapshot_equal_weight_track(week_id: str, date: str) -> dict:
     """④: 그 주 스크리너 shortlist를 LLM 판단 없이 동일가중으로 보유 — ②(LLM)가 이걸 못 이기면
     LLM이 값을 못 하는 것이라는 판단을 위한 baseline."""
@@ -210,43 +206,43 @@ def snapshot_index_track(week_id: str, date: str) -> dict:
 
 
 def snapshot_all(week_id: str, date: str) -> list[dict]:
-    return [
-        snapshot_my_holdings(week_id, date),
-        snapshot_ai_track(week_id, date),
-        snapshot_index_track(week_id, date),
-        snapshot_equal_weight_track(week_id, date),
-    ]
+    results = [snapshot_my_holdings(week_id, date)]
+    for track_id in config.LENS_TRACKS:
+        results.append(_snapshot_rebalanced_track(track_id, week_id, date))
+    results.append(snapshot_index_track(week_id, date))
+    results.append(snapshot_equal_weight_track(week_id, date))
+    return results
 
 
-def get_alpha_spread(conn=None) -> list[dict]:
-    """②(LLM) − ④(동일가중 baseline) 주간/누적 수익률 스프레드. 별도 테이블에 저장하지 않고
+def get_alpha_spread(track_id: str = config.TRACK_VALUE, conn=None) -> list[dict]:
+    """②x(LLM 렌즈) − ④(동일가중 baseline) 주간/누적 수익률 스프레드. 별도 테이블에 저장하지 않고
     snapshots에서 매번 계산한다 — 두 트랙 값만으로 완전히 유도되는 값이라 중복 저장하지 않음."""
     own_conn = conn is None
     if own_conn:
         conn = get_connection()
     rows = conn.execute(
-        """SELECT a.week_id, a.snapshot_date, a.portfolio_value AS ai_value, a.return_pct AS ai_cum,
+        """SELECT a.week_id, a.snapshot_date, a.portfolio_value AS lens_value, a.return_pct AS lens_cum,
                   b.portfolio_value AS base_value, b.return_pct AS base_cum
            FROM snapshots a JOIN snapshots b
              ON a.week_id = b.week_id AND a.track_id = ? AND b.track_id = ?
            ORDER BY a.snapshot_date""",
-        (config.TRACK_AI_BLIND, config.TRACK_EQUAL_WEIGHT),
+        (track_id, config.TRACK_EQUAL_WEIGHT),
     ).fetchall()
     if own_conn:
         conn.close()
 
     result = []
-    prev_ai_value = prev_base_value = None
+    prev_lens_value = prev_base_value = None
     for r in rows:
-        weekly_ai = (r["ai_value"] / prev_ai_value - 1) if prev_ai_value else 0.0
+        weekly_lens = (r["lens_value"] / prev_lens_value - 1) if prev_lens_value else 0.0
         weekly_base = (r["base_value"] / prev_base_value - 1) if prev_base_value else 0.0
         result.append(
             {
                 "week_id": r["week_id"],
                 "date": r["snapshot_date"],
-                "weekly_spread": weekly_ai - weekly_base,
-                "cumulative_spread": r["ai_cum"] - r["base_cum"],
+                "weekly_spread": weekly_lens - weekly_base,
+                "cumulative_spread": r["lens_cum"] - r["base_cum"],
             }
         )
-        prev_ai_value, prev_base_value = r["ai_value"], r["base_value"]
+        prev_lens_value, prev_base_value = r["lens_value"], r["base_value"]
     return result

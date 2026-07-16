@@ -109,9 +109,10 @@ def _top_cluster_weight(conn, track_id: str, week_id: str) -> float | None:
 def compute_and_log(week_id: str, date: str):
     conn = get_connection()
     market_returns = _weekly_returns(conn, config.TRACK_INDEX)
-    rebalanced_tracks = (config.TRACK_AI_BLIND, config.TRACK_EQUAL_WEIGHT)
+    rebalanced_tracks = (*config.LENS_TRACKS, config.TRACK_EQUAL_WEIGHT)
+    all_tracks = (config.TRACK_MY_HOLDINGS, *config.LENS_TRACKS, config.TRACK_INDEX, config.TRACK_EQUAL_WEIGHT)
 
-    for track_id in (config.TRACK_MY_HOLDINGS, config.TRACK_AI_BLIND, config.TRACK_INDEX, config.TRACK_EQUAL_WEIGHT):
+    for track_id in all_tracks:
         weekly_returns = _weekly_returns(conn, track_id)
         weekly_return = float(weekly_returns.iloc[-1]) if len(weekly_returns) else None
         ann_vol = float(weekly_returns.std() * _ANNUALIZATION_FACTOR) if len(weekly_returns) >= 2 else None

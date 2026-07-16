@@ -66,31 +66,34 @@ def _log_screener_output(conn, screener_output_df, financials_by_code: dict | No
         )
 
 
-def _get_previous_ai_portfolio(conn) -> list[dict]:
-    """AI 자신의 지난주 목표 포트폴리오만 가져온다 (track_id=ai_blind 고정).
+def _get_previous_lens_portfolio(conn, track_id: str) -> list[dict]:
+    """해당 렌즈 트랙 자신의 지난주 목표 포트폴리오만 가져온다 (track_id로 고정 격리).
     holdings 테이블(내 실제 보유, track_id=my_holdings)은 여기서 절대 조회하지 않는다 — 블라인드 유지."""
     latest = conn.execute(
         "SELECT week_id FROM decisions WHERE track_id = ? ORDER BY decision_date DESC LIMIT 1",
-        (config.TRACK_AI_BLIND,),
+        (track_id,),
     ).fetchone()
     if latest is None:
         return []
     rows = conn.execute(
         "SELECT stock_code, stock_name, target_weight FROM decisions WHERE track_id = ? AND week_id = ?",
-        (config.TRACK_AI_BLIND, latest["week_id"]),
+        (track_id, latest["week_id"]),
     ).fetchall()
     return [dict(r) for r in rows]
 
 
-def _log_ai_decisions(conn, week_id: str, date: str, decisions: list[dict]):
+def _log_lens_decisions(
+    conn, week_id: str, date: str, track_id: str, decisions: list[dict], weekly_perspective: str | None = None
+):
     for d in decisions:
         conn.execute(
             """INSERT INTO decisions
-               (track_id, week_id, decision_date, stock_code, stock_name, action, target_weight, rationale, conviction)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               (track_id, week_id, decision_date, stock_code, stock_name, action, target_weight, rationale,
+                conviction, weekly_perspective)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
-                config.TRACK_AI_BLIND, week_id, date, d["stock_code"], d["stock_name"],
-                d["action"], d["target_weight"], d["rationale"], d["conviction"],
+                track_id, week_id, date, d["stock_code"], d["stock_name"],
+                d["action"], d["target_weight"], d["rationale"], d["conviction"], weekly_perspective,
             ),
         )
 
@@ -147,19 +150,32 @@ def run_decision(date: str | None = None):
     news_by_stock = collect_shortlist_news(stock_names, decision_date)
     market_news = collect_market_news(decision_date)
 
-    print("[4/4] LLM 판단 (AI 자신의 지난주 포트폴리오 참고, 내 실제 보유는 여전히 미포함)")
-    previous_portfolio = _get_previous_ai_portfolio(conn)
+    print("[4/4] 4렌즈 LLM 판단 (렌즈별로 자기 자신의 지난주 포트폴리오만 참고, 내 실제 보유는 미포함)")
     shortlist_records = shortlist_df[["Code", "Name", "momentum_score"]].rename(
         columns={"Code": "stock_code", "Name": "stock_name"}
     ).to_dict("records")
-    decisions = judge(shortlist_records, news_by_stock, market_news, previous_portfolio)
-    _log_ai_decisions(conn, week_id, decision_date, decisions)
-    conn.commit()
+    for r in shortlist_records:
+        fin = financials_by_code.get(r["stock_code"], {})
+        r["per"] = fin.get("per")
+        r["pbr"] = fin.get("pbr")
+        r["roe"] = fin.get("roe")
+        r["debt_ratio"] = fin.get("debt_ratio")
+        r["op_margin"] = fin.get("op_margin")
+
+    decisions_by_lens = {}
+    for track_id in config.LENS_TRACKS:
+        lens = config.LENS_BY_TRACK[track_id]
+        previous_portfolio = _get_previous_lens_portfolio(conn, track_id)
+        decisions, weekly_perspective = judge(lens, shortlist_records, news_by_stock, market_news, previous_portfolio)
+        _log_lens_decisions(conn, week_id, decision_date, track_id, decisions, weekly_perspective)
+        conn.commit()
+        decisions_by_lens[track_id] = decisions
+        print(f"  [{lens}] {len(decisions)}개 종목 판단 완료")
+
     conn.close()
-    print(f"  {len(decisions)}개 종목 판단 완료")
 
     print("[run_decision] 완료")
-    return {"week_id": week_id, "date": decision_date, "decisions": decisions}
+    return {"week_id": week_id, "date": decision_date, "decisions_by_lens": decisions_by_lens}
 
 
 def run_execution(date: str | None = None):

@@ -54,8 +54,10 @@ def build_shortlist(
     ranked["combined_rank"] = ranked["_mom_rank"] + ranked["_liq_rank"]
     ranked = ranked.sort_values("combined_rank")
 
-    # 상관관계 행렬 (수익률 기준)
-    return_df = pd.DataFrame({code: s.pct_change().dropna().values for code, s in price_series.items() if code in ranked["Code"].values})
+    # 상관관계 행렬 (수익률 기준). 종목마다 실제 거래일 수가 조금씩 달라 인덱스 정렬 없이
+    # .values로 합치면 길이가 안 맞아 깨지므로, 날짜 인덱스를 유지한 채 concat으로 정렬한다.
+    return_series = {code: s.pct_change().dropna() for code, s in price_series.items() if code in ranked["Code"].values}
+    return_df = pd.concat(return_series, axis=1) if return_series else pd.DataFrame()
 
     cluster_id_map = {}
     cluster_counts = {}

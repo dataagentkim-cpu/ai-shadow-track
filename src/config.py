@@ -29,10 +29,19 @@ NAVER_CLIENT_ID = os.getenv("NAVER_CLIENT_ID")
 NAVER_CLIENT_SECRET = os.getenv("NAVER_CLIENT_SECRET")
 NEWS_PER_STOCK = 5
 
+# --- 배당 (DART) ---
+DART_API_KEY = os.getenv("DART_API_KEY")
+DIVIDEND_TAX_PCT = 0.154  # 배당소득세 15.4% (지방소득세 포함), 현금배당 모델링 시 세후로 반영
+# 지수(코스피/코스닥) 총수익 근사치: 개별 종목처럼 DART 공시로 정확히 계산할 수 없어(지수
+# 자체의 배당재투자 데이터 소스가 없음) 통상 언급되는 평균 배당수익률을 고정값으로 근사한다.
+KOSPI_DIVIDEND_YIELD_APPROX_PCT = 2.0
+KOSDAQ_DIVIDEND_YIELD_APPROX_PCT = 1.0
+
 # --- 트랙 ID ---
 TRACK_MY_HOLDINGS = "my_holdings"
 TRACK_AI_BLIND = "ai_blind"
 TRACK_INDEX = "index"
+TRACK_EQUAL_WEIGHT = "equal_weight"  # ④ 그 주 shortlist를 LLM 판단 없이 동일가중 보유 (LLM 기여도 격리용)
 
 # --- 체결(실행) ---
 # AI 트랙은 매주 완전 리밸런싱을 가정하므로, 판단(직전 완료 거래일 종가+뉴스)과 체결(다음

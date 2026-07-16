@@ -3,6 +3,7 @@ from datetime import datetime
 
 import benchmark
 import config
+import risk_metrics
 from data_collector import (
     assert_before_market_open,
     get_index_levels,
@@ -72,6 +73,24 @@ def _log_ai_decisions(conn, week_id: str, date: str, decisions: list[dict]):
         )
 
 
+def _log_equal_weight_decisions(conn, week_id: str, date: str, shortlist_df):
+    """④: 그 주 shortlist를 LLM 판단 없이 동일가중으로 담는 baseline 트랙 로그."""
+    n = len(shortlist_df)
+    if n == 0:
+        return
+    weight = 100.0 / n
+    for _, r in shortlist_df.iterrows():
+        conn.execute(
+            """INSERT INTO decisions
+               (track_id, week_id, decision_date, stock_code, stock_name, action, target_weight, rationale, conviction)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                config.TRACK_EQUAL_WEIGHT, week_id, date, r["Code"], r["Name"],
+                "유지", weight, "동일가중 baseline (LLM 판단 없이 스크리너 shortlist 전체를 균등 보유)", "중",
+            ),
+        )
+
+
 def run_decision(date: str | None = None):
     """판단 단계: 장 시작 전에 실행하며, 실행 시각의 'latest'가 아니라 직전 완료된 거래일
     종가로 날짜를 명시 고정한다 (공휴일이 껴도 거래일 캘린더 기준으로 자동으로 건너뜀).
@@ -92,13 +111,14 @@ def run_decision(date: str | None = None):
     print("[2/4] 정량 스크리너 실행")
     shortlist_df, screener_output_df = build_shortlist(universe, week_id, decision_date)
     _log_screener_output(conn, screener_output_df)
+    _log_equal_weight_decisions(conn, week_id, decision_date, shortlist_df)
     conn.commit()
     print(f"  shortlist {len(shortlist_df)}개 확정")
 
-    print("[3/4] shortlist 뉴스 + 시장 전반 뉴스 수집")
+    print("[3/4] shortlist 뉴스 + 시장 전반 뉴스 수집 (판단 시각 이후 게시분은 PIT 필터로 배제)")
     stock_names = shortlist_df["Name"].tolist()
-    news_by_stock = collect_shortlist_news(stock_names)
-    market_news = collect_market_news()
+    news_by_stock = collect_shortlist_news(stock_names, decision_date)
+    market_news = collect_market_news(decision_date)
 
     print("[4/4] LLM 판단 (AI 자신의 지난주 포트폴리오 참고, 내 실제 보유는 여전히 미포함)")
     previous_portfolio = _get_previous_ai_portfolio(conn)
@@ -124,6 +144,9 @@ def run_execution(date: str | None = None):
     results = benchmark.snapshot_all(week_id, date)
     for r in results:
         print(f"  {r['track_id']}: {r['value']:,.0f}원 ({r['return_pct']:+.2%})")
+
+    print("[run_execution] 위험조정 지표 계산")
+    risk_metrics.compute_and_log(week_id, date)
 
     print("[run_execution] 완료")
     return {"week_id": week_id, "date": date, "benchmark": results}

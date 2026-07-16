@@ -59,6 +59,23 @@ CREATE TABLE IF NOT EXISTS screener_output (
     included_in_shortlist INTEGER NOT NULL,
     exclude_reason TEXT
 );
+
+CREATE TABLE IF NOT EXISTS risk_metrics (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    track_id TEXT NOT NULL,
+    week_id TEXT NOT NULL,
+    snapshot_date TEXT NOT NULL,
+    weekly_return REAL,
+    ann_volatility REAL,
+    sharpe REAL,
+    sortino REAL,
+    mdd REAL,
+    hit_rate REAL,
+    turnover REAL,
+    beta REAL,
+    alpha REAL,
+    top_cluster_weight_pct REAL
+);
 """
 
 

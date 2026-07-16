@@ -23,8 +23,9 @@ _ALLOWED_CHAT_ID = os.getenv("TELEGRAM_ALLOWED_CHAT_ID")
 
 _TRACK_LABEL = {
     config.TRACK_MY_HOLDINGS: "① 내 보유",
-    config.TRACK_AI_BLIND: "② AI 백지",
+    config.TRACK_AI_BLIND: "② AI",
     config.TRACK_INDEX: "③ 지수",
+    config.TRACK_EQUAL_WEIGHT: "④ 동일가중",
 }
 
 
@@ -40,11 +41,13 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     await update.message.reply_text(
         "AI 투자 판단 섀도우 트랙 봇입니다.\n\n"
-        "/performance - 3파전 최신 수익률\n"
-        "/latest - 이번 주 AI 블라인드 판단\n"
+        "/performance - 4파전 최신 수익률\n"
+        "/latest - 이번 주 AI 판단\n"
         "/history - 최근 8주 수익률 추이\n"
         "/why 종목명 - 특정 종목에 대한 최근 판단 이유\n"
-        "/holdings - 내 실제 보유 스냅샷"
+        "/holdings - 내 실제 보유 스냅샷\n"
+        "/alpha - AI가 동일가중 baseline 대비 실제로 값을 했는지(②−④ 스프레드)\n"
+        "/risk - 트랙별 위험조정 지표(Sharpe/Sortino/MDD/베타/알파 등)"
     )
 
 
@@ -112,14 +115,15 @@ async def cmd_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for r in rows:
         by_date.setdefault(r["snapshot_date"], {})[r["track_id"]] = r["return_pct"]
 
-    lines = ["최근 수익률 추이 (내보유 / AI백지 / 지수)\n"]
+    lines = ["최근 수익률 추이 (내보유 / AI / 지수 / 동일가중)\n"]
     for date in sorted(by_date.keys(), reverse=True)[:8]:
         d = by_date[date]
         lines.append(
             f"{date}: "
             f"{d.get(config.TRACK_MY_HOLDINGS, 0):+.1%} / "
             f"{d.get(config.TRACK_AI_BLIND, 0):+.1%} / "
-            f"{d.get(config.TRACK_INDEX, 0):+.1%}"
+            f"{d.get(config.TRACK_INDEX, 0):+.1%} / "
+            f"{d.get(config.TRACK_EQUAL_WEIGHT, 0):+.1%}"
         )
     await update.message.reply_text("\n".join(lines))
 
@@ -169,6 +173,65 @@ async def cmd_holdings(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lines = [f"내 실제 보유 스냅샷 ({rows[0]['snapshot_date']}, 총 {total:,.0f}원)\n"]
     for r in rows:
         lines.append(f"- {r['stock_name']}: {r['quantity']}주, 비중 {r['snapshot_weight']:.1%}")
+    await update.message.reply_text("\n".join(lines))
+
+
+async def cmd_alpha(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """②(AI)가 ④(동일가중 baseline)를 못 이기면 LLM 판단이 값을 못 하는 것 — 그 스프레드."""
+    if not await _guard(update):
+        return
+    import benchmark
+
+    spread = benchmark.get_alpha_spread()
+    if not spread:
+        await update.message.reply_text("아직 ②/④ 둘 다 스냅샷이 없습니다.")
+        return
+
+    latest = spread[-1]
+    lines = [
+        f"AI(②) vs 동일가중 baseline(④) 스프레드 ({latest['week_id']})\n",
+        f"이번 주: {latest['weekly_spread']:+.2%}",
+        f"누적: {latest['cumulative_spread']:+.2%}\n",
+        "최근 추이 (주간 / 누적):",
+    ]
+    for s in spread[-8:]:
+        lines.append(f"{s['date']}: {s['weekly_spread']:+.2%} / {s['cumulative_spread']:+.2%}")
+    await update.message.reply_text("\n".join(lines))
+
+
+async def cmd_risk(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await _guard(update):
+        return
+    conn = get_connection()
+    rows = conn.execute(
+        """SELECT r.* FROM risk_metrics r
+           JOIN (SELECT track_id, MAX(snapshot_date) AS max_date FROM risk_metrics GROUP BY track_id) latest
+           ON r.track_id = latest.track_id AND r.snapshot_date = latest.max_date"""
+    ).fetchall()
+    conn.close()
+
+    if not rows:
+        await update.message.reply_text("아직 위험조정 지표가 없습니다.")
+        return
+
+    def _fmt(v, pct=True):
+        if v is None:
+            return "N/A"
+        return f"{v:+.2%}" if pct else f"{v:.2f}"
+
+    lines = [f"트랙별 위험조정 지표 (기준일: {rows[0]['snapshot_date']})\n"]
+    for r in sorted(rows, key=lambda x: _TRACK_LABEL.get(x["track_id"], x["track_id"])):
+        label = _TRACK_LABEL.get(r["track_id"], r["track_id"])
+        lines.append(
+            f"{label}\n"
+            f"  주간수익 {_fmt(r['weekly_return'])} | 연율화변동성 {_fmt(r['ann_volatility'])}\n"
+            f"  Sharpe {_fmt(r['sharpe'], False)} | Sortino {_fmt(r['sortino'], False)} | MDD {_fmt(r['mdd'])}\n"
+            f"  적중률 {_fmt(r['hit_rate'])}"
+            + (f" | 회전율 {_fmt(r['turnover'])}" if r["turnover"] is not None else "")
+            + (f" | 베타 {_fmt(r['beta'], False)}" if r["beta"] is not None else "")
+            + (f" | 알파 {_fmt(r['alpha'])}" if r["alpha"] is not None else "")
+            + (f" | 최대클러스터비중 {_fmt(r['top_cluster_weight_pct'])}" if r["top_cluster_weight_pct"] is not None else "")
+        )
     await update.message.reply_text("\n".join(lines))
 
 
@@ -229,6 +292,8 @@ def main():
     app.add_handler(CommandHandler("history", cmd_history))
     app.add_handler(CommandHandler("why", cmd_why))
     app.add_handler(CommandHandler("holdings", cmd_holdings))
+    app.add_handler(CommandHandler("alpha", cmd_alpha))
+    app.add_handler(CommandHandler("risk", cmd_risk))
 
     # python-telegram-bot의 JobQueue.run_daily days는 0=일요일 ~ 6=토요일 순서라 화요일은 2다.
     TUESDAY = 2

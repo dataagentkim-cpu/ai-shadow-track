@@ -173,7 +173,7 @@ async def cmd_holdings(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def decision_job(context: ContextTypes.DEFAULT_TYPE):
-    """매주 월요일 07:00 KST(장 시작 전) — 금요일 종가+주말 뉴스 기준으로 판단만 내린다."""
+    """매주 화요일 07:00 KST(장 시작 전) — 월요일 종가+뉴스 기준으로 판단만 내린다."""
     import run_weekly
 
     log.info("주간 판단 시작")
@@ -195,7 +195,7 @@ async def decision_job(context: ContextTypes.DEFAULT_TYPE):
 
 
 async def execution_job(context: ContextTypes.DEFAULT_TYPE):
-    """매주 월요일 09:05 KST(장 시작 후) — 실제 당일 시가 기준으로 체결/벤치마크를 확정한다."""
+    """매주 화요일 09:05 KST(장 시작 후) — 실제 당일 시가 기준으로 체결/벤치마크를 확정한다."""
     import run_weekly
 
     log.info("주간 체결 시작")
@@ -230,13 +230,13 @@ def main():
     app.add_handler(CommandHandler("why", cmd_why))
     app.add_handler(CommandHandler("holdings", cmd_holdings))
 
-    # python-telegram-bot의 JobQueue.run_daily days는 0=일요일 ~ 6=토요일 순서라 월요일은 1이다.
-    MONDAY = 1
+    # python-telegram-bot의 JobQueue.run_daily days는 0=일요일 ~ 6=토요일 순서라 화요일은 2다.
+    TUESDAY = 2
     app.job_queue.run_daily(
-        decision_job, time=datetime.time(7, 0, 0, tzinfo=KST), days=(MONDAY,), name="weekly_decision"
+        decision_job, time=datetime.time(7, 0, 0, tzinfo=KST), days=(TUESDAY,), name="weekly_decision"
     )
     app.job_queue.run_daily(
-        execution_job, time=datetime.time(9, 5, 0, tzinfo=KST), days=(MONDAY,), name="weekly_execution"
+        execution_job, time=datetime.time(9, 5, 0, tzinfo=KST), days=(TUESDAY,), name="weekly_execution"
     )
 
     print("텔레그램 Q&A 봇 시작 (Ctrl+C로 종료)")

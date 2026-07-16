@@ -52,7 +52,7 @@ def _log_ai_decisions(conn, week_id: str, date: str, decisions: list[dict]):
 
 
 def run_decision(date: str | None = None):
-    """판단 단계: 장 시작 전(금요일 종가+주말 뉴스 기준)에 실행. 아직 체결/벤치마크는 안 한다."""
+    """판단 단계: 장 시작 전(월요일 종가+뉴스 기준)에 실행. 아직 체결/벤치마크는 안 한다."""
     date = date or datetime.now().strftime("%Y-%m-%d")
     week_id = _week_id(date)
     print(f"[run_decision] {date} ({week_id}) 판단 시작")

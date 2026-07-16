@@ -19,13 +19,14 @@ def _price_change(code: str, from_date: str, to_date: str) -> float:
 
 
 def _entry_exit_return(code: str, from_date: str, to_date: str) -> float:
-    """AI 트랙 전용: 판단(금요일 종가+뉴스)과 체결(다음 거래일 시가)을 분리해 look-ahead 편향을 제거.
-    진입가에는 슬리피지를 얹고, 청산가(=다음 스냅샷 시점의 시가, 아직 매도한 게 아니라 평가액일 뿐)는 그대로 둔다."""
+    """AI 트랙 전용: 판단(월요일 종가+뉴스)과 체결(화요일 시가)을 분리해 look-ahead 편향을 제거.
+    매주 완전 리밸런싱을 가정하므로 진입(매수)에는 슬리피지+수수료, 청산(=다음 스냅샷 시점에 전량
+    매도하고 새로 담는다고 가정한 매도)에는 수수료+거래세를 반영한다."""
     hist = fdr.DataReader(code, from_date, to_date)
     if len(hist) < 2:
         return 0.0
-    entry_price = float(hist["Open"].iloc[0]) * (1 + config.EXECUTION_SLIPPAGE_PCT)
-    exit_price = float(hist["Open"].iloc[-1])
+    entry_price = float(hist["Open"].iloc[0]) * (1 + config.EXECUTION_SLIPPAGE_PCT + config.BROKER_FEE_PCT)
+    exit_price = float(hist["Open"].iloc[-1]) * (1 - config.BROKER_FEE_PCT - config.TRANSACTION_TAX_PCT)
     return exit_price / entry_price - 1
 
 

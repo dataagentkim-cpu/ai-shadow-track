@@ -36,17 +36,17 @@
 - 사용자가 예전에 running_coach 에이전트를 Railway → AWS로 옮긴 적이 있어서, 그 서버 구성을 그대로 참고해서 미러링함.
 - 서버: 기존 EC2 t2.micro (`3.35.236.206`, ubuntu 26.04, ubuntu 사용자) — 새 인스턴스를 따로 안 띄우고 이 서버에 두 번째 봇으로 공존시키기로 결정 (aws configure 자격증명 설정 없이도 SSH만으로 바로 배포 가능했고, 리소스도 가벼워서 충분).
 - **주간 스케줄링 방식도 그대로 미러링**: `run_weekly.py`를 GitHub Actions cron이나 systemd timer로 도는 게 아니라, `telegram_bot.py` 안에서 python-telegram-bot의 `JobQueue.run_daily`로 실행 (러닝코치 봇의 `bot.py`가 `jq.run_daily(weekly_report, ...)`로 월요일 리포트를 보내는 것과 동일 패턴). 이 방식의 장점 — 봇 프로세스 하나로 상시구동+주간배치가 다 해결되고, 별도 크론 인프라나 GitHub Actions secrets에 의존하지 않음.
-  주의: `JobQueue.run_daily`의 `days` 파라미터는 **0=일요일 ~ 6=토요일** 순서다 (Python 표준 `date.weekday()`의 월=0과 다름). 처음에 `days=(0,)`로 넣어서 실제로는 일요일에 도는 버그가 있었음 — `days=(1,)`로 수정 (러닝코치 봇의 `jq.run_daily(..., days=(0,))`도 같은 라이브러리를 쓰므로 동일한 착오가 있을 가능성이 있음, 확인 안 해봄).
+  주의: `JobQueue.run_daily`의 `days` 파라미터는 **0=일요일 ~ 6=토요일** 순서다 (Python 표준 `date.weekday()`의 월=0과 다름). 처음에 `days=(0,)`로 넣어서 실제로는 일요일에 도는 버그가 있었음 (러닝코치 봇의 `jq.run_daily(..., days=(0,))`도 같은 라이브러리를 쓰므로 동일한 착오가 있을 가능성이 있음, 확인 안 해봄). 이후 스케줄을 화요일로 옮기면서 최종적으로 `days=(2,)`.
 
-## Look-ahead 편향 수정: 판단/체결 시점 분리 (2026-07-16)
-- 문제: AI 트랙은 "금요일 종가+주말 뉴스로 판단 → 그 순간 가격으로 바로 체결"하는 구조였는데, 실제로는 그 가격에 체결이 불가능함(이미 지나간 가격). 게다가 거래비용(수수료·거래세·슬리피지)이 전혀 반영 안 돼 있어서 매주 100% 리밸런싱을 가정하는 AI 트랙에 유리하게 왜곡돼 있었음.
-- 해결: `run_weekly.py`를 `run_decision()`(장 시작 전, 스냅샷→스크리너→뉴스→LLM판단만)과 `run_execution()`(장 시작 후, 벤치마크만)으로 분리. `telegram_bot.py`도 `decision_job`(월 07:00 KST)과 `execution_job`(월 09:05 KST) 두 개로 나눠서 스케줄.
-- `benchmark.py`에 AI 트랙 전용 `_entry_exit_return()` 추가 — 진입가는 실행일의 **시가**(Open) × (1+슬리피지), 청산가(=다음 스냅샷 시점 평가용, 실제 매도 아님)는 그대로 시가를 사용. 슬리피지는 `config.EXECUTION_SLIPPAGE_PCT = 0.003`(0.2~0.5% 범위 중간값).
-- 내 보유(①)/지수(③) 트랙은 손대지 않음 — 그 트랙들은 매주 새로 트레이딩 결정을 내리는 게 아니라서 애초에 look-ahead 편향이 없음.
-- 아직 안 한 것: 브로커 수수료·거래세는 여전히 미반영 (슬리피지만 반영). 사용자가 원하면 추가 가능.
   주의: `python-telegram-bot[job-queue]` extra(APScheduler 포함)를 설치해야 `app.job_queue`가 `None`이 아니게 됨 — 처음에 이걸 놓쳐서 서비스가 한 번 죽었었음 (`AttributeError: 'NoneType' object has no attribute 'run_daily'`).
 - systemd 유닛(`shadowtrack.service`)도 `runcoach.service`와 완전히 동일한 구조로 작성 (User=ubuntu, EnvironmentFile=.env, Restart=always).
 - **GitHub Actions의 역할이 바뀜**: 원래 계획했던 "주간 파이프라인을 Actions에서 돌리고 db를 커밋"하는 방식은 폐기. 개인 보유 데이터가 담긴 db를 public 레포에 커밋할 수 없어서(아래 항목 참조) 어차피 안 맞았고, JobQueue 방식으로 가면서 완전히 불필요해짐. 지금은 `.github/workflows/deploy.yml`이 main push 시 EC2로 SSH 접속해 git pull + 의존성 재설치 + `systemctl restart shadowtrack`만 하는 순수 CD 파이프라인.
+
+## Look-ahead 편향 수정 + 거래비용 반영 (2026-07-16)
+- 1차 수정: AI 트랙이 "판단 시점 가격으로 바로 체결"하는 구조라 실제로는 불가능한 가격에 체결하는 셈이었음(look-ahead). `run_weekly.py`를 `run_decision()`(장 시작 전, 스냅샷→스크리너→뉴스→LLM판단만)과 `run_execution()`(장 시작 후, 실제 시가로 벤치마크만)으로 분리. `telegram_bot.py`도 `decision_job`/`execution_job` 두 개로 나눠서 스케줄.
+- 2차 수정(사용자 요청): 처음엔 "금요일 종가 판단 → 월요일 시가 체결"이었으나, "월요일 종가 판단 → 화요일 시가 체결"로 하루 밀림. `decision_job`은 화요일 07:00 KST(장 시작 전, 월요일 종가+뉴스 기준), `execution_job`은 화요일 09:05 KST(장 시작 후, 화요일 실제 시가 기준)로 스케줄 변경. 체결가 자체의 계산 방식(시가+슬리피지)은 그대로 유지, 요일만 이동.
+- 거래비용도 추가: `benchmark.py`의 `_entry_exit_return()`에서 진입가 = 시가×(1+슬리피지+매매수수료), 청산가 = 시가×(1-매매수수료-거래세). 매주 완전 리밸런싱을 가정하므로 매주 왕복 비용을 전부 부과. 수수료/거래세는 정확한 종목별 시장 구분 없이 근사치로 설정(`config.BROKER_FEE_PCT`, `config.TRANSACTION_TAX_PCT`) — 정밀한 세율 반영이 목적이 아니라 "리밸런싱이 공짜가 아니다"라는 걸 수익률에 실어주는 게 목적.
+- 내 보유(①)/지수(③) 트랙은 손대지 않음 — 그 트랙들은 매주 새로 트레이딩 결정을 내리는 게 아니라서 애초에 look-ahead 편향도, 매주 거래비용도 해당 없음.
 
 ## 레포 공개 범위와 개인 데이터 분리
 - 사용자의 다른 레포들은 다 public이라 이 프로젝트도 처음엔 public + db 커밋 방침으로 갔었음.

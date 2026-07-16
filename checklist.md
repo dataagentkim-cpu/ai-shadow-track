@@ -11,17 +11,20 @@
 - [x] 3파전 벤치마크 스냅샷 (benchmark.py) - 실제 데이터로 검증 완료
 - [x] 주간 오케스트레이터 (run_weekly.py)
 
-## 텔레그램 Q&A
-- [x] telegram_bot.py (/performance /latest /history /why /holdings) - DB 쿼리 로직 검증 완료
-- [ ] **사용자 조치 필요**: BotFather로 봇 생성 → TELEGRAM_BOT_TOKEN 발급, 본인 chat_id 확인 후 .env에 반영
-- [ ] 봇을 상시 구동 (로컬 실행 또는 launchd 상시 프로세스로 등록)
+## 텔레그램 Q&A + 상시 구동
+- [x] telegram_bot.py (/performance /latest /history /why /holdings) - 실제 서버에서 동작 확인
+- [x] BotFather로 봇 생성, TELEGRAM_BOT_TOKEN/chat_id 발급 및 반영
+- [x] 주간 사이클을 GitHub Actions 크론이 아니라 봇 내장 JobQueue(run_daily, 매주 월요일 07:00 KST)로 실행 — running-coach-bot과 동일 패턴
+- [x] AWS EC2(t2.micro, 3.35.236.206 — running-coach-bot과 같은 서버에 공존)에 systemd 서비스(`shadowtrack.service`)로 상시 구동 등록
 
 ## 자동화 (GitHub Actions)
-- [x] .github/workflows/weekly.yml 작성 (매주 월요일 07:00 KST, 실행 후 DB 커밋 + 텔레그램 알림)
-- [ ] **사용자 조치 필요**: GitHub 원격 저장소 생성 + push
-- [ ] **사용자 조치 필요**: repo secrets 등록 (ANTHROPIC_API_KEY/NAVER_CLIENT_ID/SECRET은 로컬 .env에 있는 값 그대로, TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID는 봇 발급 후)
+- [x] `.github/workflows/deploy.yml` — main에 push되면 EC2로 SSH 접속해 git pull + pip install + systemctl restart (CD 전용, 파이프라인 실행은 안 함)
+- [x] GitHub public 레포 생성 + push (https://github.com/dataagentkim-cpu/ai-shadow-track)
+- [x] repo secrets 등록 (EC2_HOST, EC2_SSH_KEY) + 서버 passwordless sudo 확인
+- [x] 개인 보유 데이터가 담긴 `data/shadow_track.db`는 git에서 완전히 제외 (레포는 public, db는 서버 로컬에만 존재)
 
 ## 미해결/알려진 제약 (사후 검토 필요)
 - [ ] 밸류에이션(PER/PBR) 데이터 소스 부재 - pykrx가 KRX 로그인 요구로 막혀 모멘텀+유동성만으로 랭킹 중
 - [ ] 지주-자회사 중복 제거는 미구현 (보통주/우선주 쌍만 제거)
 - [ ] P1 사후검증 리포트, 대시보드는 이번 빌드 범위 밖
+- [ ] t2.micro를 러닝코치 봇과 공유 중 (RAM 951MB) — 두 봇 다 가벼운 편이라 문제 없었지만, 주간 사이클(스크리너 히스토리 조회 150건) 실행 중 메모리 사용량은 아직 서버에서 실측 안 함

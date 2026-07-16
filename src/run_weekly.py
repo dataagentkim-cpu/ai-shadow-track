@@ -151,8 +151,8 @@ def run_decision(date: str | None = None):
     market_news = collect_market_news(decision_date)
 
     print("[4/4] 4렌즈 LLM 판단 (렌즈별로 자기 자신의 지난주 포트폴리오만 참고, 내 실제 보유는 미포함)")
-    shortlist_records = shortlist_df[["Code", "Name", "momentum_score"]].rename(
-        columns={"Code": "stock_code", "Name": "stock_name"}
+    shortlist_records = shortlist_df[["Code", "Name", "momentum_score", "Industry"]].rename(
+        columns={"Code": "stock_code", "Name": "stock_name", "Industry": "industry"}
     ).to_dict("records")
     for r in shortlist_records:
         fin = financials_by_code.get(r["stock_code"], {})

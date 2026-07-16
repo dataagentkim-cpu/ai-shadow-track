@@ -70,11 +70,20 @@ _COMMON_FRAMING = f"""
 - 스크리너가 이미 위생/중복/쏠림 정리를 마친 shortlist이므로, 이 안에서 당신의 렌즈로 자유롭게 선택하세요.
 - 당신은 어떤 개인의 실제 보유 종목도 알지 못하며 알 필요가 없습니다. "지난주 포트폴리오"는 당신
   자신이 지난주에 내린 판단일 뿐, 실제 개인 계좌와는 무관합니다.
-- 각 종목에는 90일 모멘텀 스코어와 함께 PER·PBR·ROE·부채비율·영업이익률이 제공됩니다 (DART 공시
-  기반, 일부 종목은 공시 부재로 N/A일 수 있음). N/A인 지표는 억지로 추정하지 말고 없는 대로 판단하세요.
-  **회계상 주의**: 은행/금융지주는 예금이 부채로 잡혀 부채비율이 1000%를 넘게 나올 수 있는데 이는
-  업종 특성일 뿐 실제 위험 신호가 아닙니다. 지주회사는 자체 매출이 작아 영업이익률이 비정상적으로
-  크거나 왜곡되어 보일 수 있습니다. 이 두 지표를 이런 업종에 그대로 적용해 액면 그대로 해석하지 마세요."""
+- 각 종목에는 업종(KRX 등록 업종)과 90일 모멘텀 스코어, PER·PBR·ROE·부채비율·영업이익률이 제공됩니다
+  (DART 공시 기반, 일부 종목은 공시 부재로 N/A일 수 있음). N/A인 지표는 억지로 추정하지 말고 없는
+  대로 판단하세요.
+  **업종 맥락 없이 재무 수치를 기계적으로 해석하지 말 것**: 금융업(은행/보험/증권 등)·금융지주회사·
+  리츠(REITs)는 부채비율·영업이익률·PBR의 통상적인 해석이 일반 제조/서비스업과 다릅니다.
+  - 은행/보험/금융지주(업종에 "은행", "보험", "금융업"이 포함되는 종목): 예금·보험부채·차입금이
+    사업 구조상 원래 부채로 잡히므로 부채비율이 수백~수천%로 나올 수 있는데, 이는 업종 특성일
+    뿐 실제 위험 신호가 아닙니다.
+  - 지주회사(대개 업종이 "기타 금융업"으로 분류됨): 자체 매출이 작고 자회사 배당·지분법 이익이
+    주 수익원이라 영업이익률이 비정상적으로 크거나 왜곡되어 보일 수 있습니다.
+  - 리츠(업종이 "부동산 임대 및 공급업" 또는 "신탁업 및 집합투자업"): 자산 대부분이 부동산이라
+    일반 기업과 다른 PBR 밴드에서 거래되는 경우가 많습니다 — 액면가 그대로 "저평가/고평가"를
+    판단하지 말고 같은 업종 내 상대 비교로 접근하세요.
+  이 업종들의 종목에 대해서는 제공된 업종 정보를 참고해 위 지표들을 업종 맥락에 맞게 해석하세요."""
 
 _SYSTEM_PROMPT_VALUE = f"""당신은 국내주식(코스피+코스닥) 전문 포트폴리오 매니저이며, 오직 **가치(Value) 투자 철학**만을
 고정적으로 따릅니다 (렌즈를 매주 바꾸지 않습니다).
@@ -152,8 +161,9 @@ def _build_user_prompt(
         roe = _fmt_ratio(s.get("roe"), "%", 100)
         debt_ratio = _fmt_ratio(s.get("debt_ratio"), "%", 100)
         op_margin = _fmt_ratio(s.get("op_margin"), "%", 100)
+        industry = s.get("industry") or "N/A"
         lines.append(
-            f"- {s['stock_name']}({s['stock_code']}): 90일 수익률 {s['momentum_score']:+.1%} | "
+            f"- {s['stock_name']}({s['stock_code']}) [업종: {industry}]: 90일 수익률 {s['momentum_score']:+.1%} | "
             f"PER {per} · PBR {pbr} · ROE {roe} · 부채비율 {debt_ratio} · 영업이익률 {op_margin}"
         )
         for n in news_by_stock.get(s["stock_name"], [])[:3]:
@@ -195,8 +205,9 @@ def judge(
 
 if __name__ == "__main__":
     sample_shortlist = [
-        {"stock_code": "005930", "stock_name": "삼성전자", "momentum_score": 0.05, "per": 33.1, "pbr": 3.4, "roe": 0.104, "debt_ratio": 0.299, "op_margin": 0.131},
-        {"stock_code": "105560", "stock_name": "KB금융", "momentum_score": 0.03, "per": 10.9, "pbr": 1.1, "roe": 0.096, "debt_ratio": 12.117, "op_margin": None},
+        {"stock_code": "005930", "stock_name": "삼성전자", "industry": "통신 및 방송 장비 제조업", "momentum_score": 0.05, "per": 33.1, "pbr": 3.4, "roe": 0.104, "debt_ratio": 0.299, "op_margin": 0.131},
+        {"stock_code": "105560", "stock_name": "KB금융", "industry": "기타 금융업", "momentum_score": 0.03, "per": 10.9, "pbr": 1.1, "roe": 0.096, "debt_ratio": 12.117, "op_margin": None},
+        {"stock_code": "330590", "stock_name": "롯데리츠", "industry": "부동산 임대 및 공급업", "momentum_score": 0.01, "per": 15.2, "pbr": 0.9, "roe": 0.06, "debt_ratio": 0.85, "op_margin": 0.55},
     ]
     decisions, perspective = judge("quality", sample_shortlist, {}, [])
     print(json.dumps({"weekly_perspective": perspective, "decisions": decisions}, ensure_ascii=False, indent=2))

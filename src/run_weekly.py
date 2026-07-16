@@ -43,6 +43,22 @@ def _log_screener_output(conn, screener_output_df):
         )
 
 
+def _get_previous_ai_portfolio(conn) -> list[dict]:
+    """AI 자신의 지난주 목표 포트폴리오만 가져온다 (track_id=ai_blind 고정).
+    holdings 테이블(내 실제 보유, track_id=my_holdings)은 여기서 절대 조회하지 않는다 — 블라인드 유지."""
+    latest = conn.execute(
+        "SELECT week_id FROM decisions WHERE track_id = ? ORDER BY decision_date DESC LIMIT 1",
+        (config.TRACK_AI_BLIND,),
+    ).fetchone()
+    if latest is None:
+        return []
+    rows = conn.execute(
+        "SELECT stock_code, stock_name, target_weight FROM decisions WHERE track_id = ? AND week_id = ?",
+        (config.TRACK_AI_BLIND, latest["week_id"]),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def _log_ai_decisions(conn, week_id: str, date: str, decisions: list[dict]):
     for d in decisions:
         conn.execute(
@@ -84,11 +100,12 @@ def run_decision(date: str | None = None):
     news_by_stock = collect_shortlist_news(stock_names)
     market_news = collect_market_news()
 
-    print("[4/4] LLM 블라인드 판단")
+    print("[4/4] LLM 판단 (AI 자신의 지난주 포트폴리오 참고, 내 실제 보유는 여전히 미포함)")
+    previous_portfolio = _get_previous_ai_portfolio(conn)
     shortlist_records = shortlist_df[["Code", "Name", "momentum_score"]].rename(
         columns={"Code": "stock_code", "Name": "stock_name"}
     ).to_dict("records")
-    decisions = judge(shortlist_records, news_by_stock, market_news)
+    decisions = judge(shortlist_records, news_by_stock, market_news, previous_portfolio)
     _log_ai_decisions(conn, week_id, decision_date, decisions)
     conn.commit()
     conn.close()

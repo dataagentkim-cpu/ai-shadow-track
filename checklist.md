@@ -14,6 +14,9 @@
 - [x] `run_weekly.run()`은 판단만 실행, 체결/벤치마크 자동 실행 금지 (성과 기록 오염 방지 안전장치)
 - [x] 거래비용 반영: 슬리피지 0.3%(진입·청산 양쪽 불리한 방향), 매매수수료 0.015%(양방향), 증권거래세 0.20%(매도 시, 2026년 기준 코스피/코스닥 공통)
 - [x] 내 보유(①)·AI(②)·지수(③) 세 트랙 모두 `benchmark._get_open_price()`로 통일해 같은 거래일 시가 기준에서 출발
+- [x] AI 트랙 stateful 전환: 매주 지난주 자기 포트폴리오(track_id=ai_blind만, 내 실제 보유는 여전히 미포함)를 LLM 인풋으로 참고해 확대/유지/축소/매도 판단. 매수가·수익률은 프롬프트에서 배제(앵커링·처분효과 방지), "전량 유지"도 유효한 출력
+- [x] 거래비용을 지난주 대비 실제 비중 변화(델타)에만 부과하도록 변경 — 유지되는 포지션은 비용 0 (`benchmark._rebalance_cost_pct`)
+- [x] 블라인드 격리 감사 완료: `llm_judge.py`/`run_weekly.py`에 holdings 테이블·TRACK_MY_HOLDINGS 참조 전무, `_get_previous_ai_portfolio()`는 track_id=ai_blind로 하드 필터링
 
 ## 텔레그램 Q&A + 상시 구동
 - [x] telegram_bot.py (/performance /latest /history /why /holdings) - 실제 서버에서 동작 확인

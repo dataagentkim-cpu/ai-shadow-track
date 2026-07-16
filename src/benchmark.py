@@ -29,16 +29,27 @@ def _get_open_price(code: str, date: str) -> float:
     return float(hist["Open"].iloc[-1])
 
 
-def _entry_exit_return(code: str, from_date: str, to_date: str) -> float:
-    """AI 트랙 전용: 판단(직전 완료 거래일 종가+뉴스)과 체결(다음 거래일 시가)을 분리해
-    look-ahead 편향을 제거. 매주 완전 리밸런싱을 가정하므로 진입(매수)/청산(=다음 스냅샷
-    시점에 전량 매도 후 새로 담는다고 가정)에 각각 불리한 방향으로 슬리피지를 적용하고,
-    매매수수료는 양방향, 증권거래세는 매도(청산) 시에만 반영한다."""
+def _raw_return(code: str, from_date: str, to_date: str) -> float:
+    """비용 없는 순수 시가 대비 시가 수익률. 실제로 거래(비중 변경)가 없었던 보유 구간에 쓴다 —
+    유지되는 포지션은 거래비용이 없어야 하므로 순수 가격변동만 반영."""
     entry_open = _get_open_price(code, from_date)
     exit_open = _get_open_price(code, to_date)
-    entry_price = entry_open * (1 + config.EXECUTION_SLIPPAGE_PCT + config.BROKER_FEE_PCT)
-    exit_price = exit_open * (1 - config.EXECUTION_SLIPPAGE_PCT - config.BROKER_FEE_PCT - config.TRANSACTION_TAX_PCT)
-    return exit_price / entry_price - 1
+    return exit_open / entry_open - 1
+
+
+def _rebalance_cost_pct(prev_weights: dict, curr_weights: dict) -> float:
+    """AI 트랙 전용: 지난주 대비 이번 주 목표비중의 실제 변화(델타)에만 거래비용을 부과한다.
+    유지되는 부분(델타 0)은 비용이 없다. 델타가 양수(비중 확대/신규 편입)면 매수 쪽 비용
+    (슬리피지+수수료), 음수(비중 축소/전량 매도)면 매도 쪽 비용(슬리피지+수수료+거래세)을 뗀다."""
+    codes = set(prev_weights) | set(curr_weights)
+    cost = 0.0
+    for code in codes:
+        delta = curr_weights.get(code, 0.0) - prev_weights.get(code, 0.0)
+        if delta > 0:
+            cost += delta * (config.EXECUTION_SLIPPAGE_PCT + config.BROKER_FEE_PCT)
+        elif delta < 0:
+            cost += abs(delta) * (config.EXECUTION_SLIPPAGE_PCT + config.BROKER_FEE_PCT + config.TRANSACTION_TAX_PCT)
+    return cost
 
 
 def _index_change(from_date: str, to_date: str) -> float:
@@ -65,6 +76,9 @@ def snapshot_my_holdings(week_id: str, date: str) -> dict:
 
 
 def snapshot_ai_track(week_id: str, date: str) -> dict:
+    """지난주 보유분은 순수 가격변동만 반영하고(거래 안 했으니 비용 없음), 이번 주 새 목표비중과의
+    델타에만 리밸런싱 비용을 부과한다 (stateful — 매주 전량 재구성이 아니라 지난주 포트폴리오를
+    이어받아 부분 조정)."""
     conn = get_connection()
     anchor = _anchor_value(conn)
 
@@ -80,11 +94,23 @@ def snapshot_ai_track(week_id: str, date: str) -> dict:
             "SELECT stock_code, target_weight FROM decisions WHERE track_id = ? AND week_id = ?",
             (config.TRACK_AI_BLIND, prev["week_id"]),
         ).fetchall()
-        weighted_return = sum(
-            (d["target_weight"] / 100) * _entry_exit_return(d["stock_code"], prev["snapshot_date"], date)
-            for d in prev_decisions
+        prev_weights = {d["stock_code"]: d["target_weight"] / 100 for d in prev_decisions}
+
+        curr_decisions = conn.execute(
+            "SELECT stock_code, target_weight FROM decisions WHERE track_id = ? AND week_id = ?",
+            (config.TRACK_AI_BLIND, week_id),
+        ).fetchall()
+        if not curr_decisions:
+            raise RuntimeError(f"{week_id}에 대한 AI 판단이 없음 — decision_job이 먼저 실행됐는지 확인 필요")
+        curr_weights = {d["stock_code"]: d["target_weight"] / 100 for d in curr_decisions}
+
+        holding_return = sum(
+            w * _raw_return(code, prev["snapshot_date"], date) for code, w in prev_weights.items()
         )
-        value = prev["portfolio_value"] * (1 + weighted_return)
+        value_before_rebalance = prev["portfolio_value"] * (1 + holding_return)
+
+        cost_pct = _rebalance_cost_pct(prev_weights, curr_weights)
+        value = value_before_rebalance * (1 - cost_pct)
 
     return_pct = value / anchor - 1
     conn.execute(

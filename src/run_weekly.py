@@ -178,10 +178,25 @@ def run_decision(date: str | None = None):
     return {"week_id": week_id, "date": decision_date, "decisions_by_lens": decisions_by_lens}
 
 
+def _latest_decision_week(conn) -> str:
+    """가장 최근 판단이 실제로 기록된 week_id. 실행 시각의 캘린더 날짜로 week_id를 계산하면
+    연휴 등으로 판단일이 이전 ISO 주차로 밀렸을 때 판단 주차와 체결 주차가 어긋나 turnover/
+    리밸런싱 계산이 빈 포트폴리오로 오인될 수 있다 — 항상 실제 판단이 존재하는 주차를 따라간다."""
+    row = conn.execute(
+        "SELECT week_id FROM decisions WHERE track_id = ? ORDER BY decision_date DESC LIMIT 1",
+        (config.TRACK_VALUE,),
+    ).fetchone()
+    if row is None:
+        raise RuntimeError("판단 로그가 전혀 없음 — run_decision()을 먼저 실행해야 함")
+    return row["week_id"]
+
+
 def run_execution(date: str | None = None):
-    """체결 단계: 장 시작 이후(실제 당일 시가가 나온 뒤) 실행. 3파전 벤치마크를 확정한다."""
+    """체결 단계: 장 시작 이후(실제 당일 시가가 나온 뒤) 실행. 4파전 벤치마크를 확정한다."""
     date = date or datetime.now().strftime("%Y-%m-%d")
-    week_id = _week_id(date)
+    conn = get_connection()
+    week_id = _latest_decision_week(conn)
+    conn.close()
     print(f"[run_execution] {date} ({week_id}) 체결/벤치마크 시작")
 
     results = benchmark.snapshot_all(week_id, date)

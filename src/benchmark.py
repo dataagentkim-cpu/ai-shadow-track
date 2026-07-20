@@ -206,11 +206,18 @@ def snapshot_index_track(week_id: str, date: str) -> dict:
 
 
 def snapshot_all(week_id: str, date: str) -> list[dict]:
+    """③(지수)는 KS11/KQ11 지수 데이터가 개별 종목 시세보다 늦게 갱신되는 경우가 있어(FDR 소스 특성),
+    순서를 맨 뒤로 두고 실패해도 나머지 트랙 기록을 막지 않는다 — ①②x④는 개별 종목 시가만 있으면
+    되므로 지수 지연과 무관하게 매주 안정적으로 쌓인다. 지수가 이번 주 누락되면 별도로 나중에
+    `snapshot_index_track(week_id, date)`를 수동으로 재실행해 채워 넣을 수 있다."""
     results = [snapshot_my_holdings(week_id, date)]
     for track_id in config.LENS_TRACKS:
         results.append(_snapshot_rebalanced_track(track_id, week_id, date))
-    results.append(snapshot_index_track(week_id, date))
     results.append(snapshot_equal_weight_track(week_id, date))
+    try:
+        results.append(snapshot_index_track(week_id, date))
+    except RuntimeError as e:
+        print(f"[benchmark] 경고: 지수(③) 스냅샷 실패, 나머지 트랙은 정상 기록됨 — {e}")
     return results
 
 

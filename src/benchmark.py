@@ -16,7 +16,10 @@ def _anchor_value(conn) -> float:
 
 def _get_open_price(code: str, date: str) -> float:
     """date의 실제 시가를 명시적으로 가져온다. 그 날짜 데이터가 아직 없으면(장 시작 전에
-    잘못 호출된 경우 등) 조용히 넘어가지 않고 바로 에러를 낸다."""
+    잘못 호출된 경우 등) 조용히 넘어가지 않고 바로 에러를 낸다. 거래정지일은 행 자체는
+    있는데 시가·거래량이 0으로 채워져 나오는 경우가 FDR에서 관찰돼(예: 2026-07-20 모나미),
+    이것도 '유효한 시가 없음'과 동일하게 취급해 에러를 낸다 — 0을 실제 가격으로 오인해
+    수익률이 -100%로 계산되는 걸 방지."""
     start = (datetime.strptime(date, "%Y-%m-%d") - timedelta(days=10)).strftime("%Y-%m-%d")
     hist = fdr.DataReader(code, start, date)
     if hist.empty:
@@ -26,20 +29,25 @@ def _get_open_price(code: str, date: str) -> float:
         raise RuntimeError(
             f"{code}: {date} 시가가 아직 없음 (마지막 확인된 거래일 {last_date}) — 장 시작 전에 실행됐을 가능성"
         )
-    return float(hist["Open"].iloc[-1])
+    open_price = float(hist["Open"].iloc[-1])
+    if open_price <= 0:
+        raise RuntimeError(f"{code}: {date} 거래정지로 추정됨(시가 0) — 정상 시가 아님")
+    return open_price
 
 
 def _get_open_price_safe(code: str, date: str) -> tuple[float, bool]:
-    """실제 시가를 가져오되, 거래정지/상장폐지로 그 날짜 데이터가 없으면 마지막으로 확인된
-    가격으로 동결 청산 처리한다. 반환값: (가격, 상장폐지로_추정되는지)."""
+    """실제 시가를 가져오되, 거래정지/상장폐지로 그 날짜 데이터가 없거나 시가가 0이면
+    최근 60일 내 마지막으로 정상 거래된(시가>0) 가격으로 동결 청산 처리한다.
+    반환값: (가격, 상장폐지로_추정되는지)."""
     try:
         return _get_open_price(code, date), False
     except RuntimeError:
         start = (datetime.strptime(date, "%Y-%m-%d") - timedelta(days=60)).strftime("%Y-%m-%d")
         hist = fdr.DataReader(code, start, date)
-        if hist.empty:
-            raise RuntimeError(f"{code}: 최근 60일간 거래 데이터가 전혀 없음 (완전 상장폐지 가능성 — 수동 확인 필요)")
-        return float(hist["Open"].iloc[-1]), True
+        valid = hist[hist["Open"] > 0] if not hist.empty else hist
+        if valid.empty:
+            raise RuntimeError(f"{code}: 최근 60일간 정상 거래 데이터가 전혀 없음 (완전 상장폐지 가능성 — 수동 확인 필요)")
+        return float(valid["Open"].iloc[-1]), True
 
 
 def _dividend_accrual(code: str, from_date: str, to_date: str) -> float:
@@ -109,7 +117,7 @@ def snapshot_my_holdings(week_id: str, date: str) -> dict:
     if prev is None:
         value = anchor
     else:
-        prev_prices = {h["stock_code"]: _get_open_price(h["stock_code"], prev["snapshot_date"]) for h in holdings}
+        prev_prices = {h["stock_code"]: _get_open_price_safe(h["stock_code"], prev["snapshot_date"])[0] for h in holdings}
         prev_total = sum(prev_prices[h["stock_code"]] * h["quantity"] for h in holdings)
         weighted_return = sum(
             (prev_prices[h["stock_code"]] * h["quantity"] / prev_total)

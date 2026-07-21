@@ -5,6 +5,7 @@ import FinanceDataReader as fdr
 
 import config
 import dart_client
+from data_collector import get_last_completed_trading_day
 from db import get_connection
 
 
@@ -287,11 +288,22 @@ def _mark_to_market_index(date: str) -> dict:
     return {"track_id": config.TRACK_INDEX, "value": value, "return_pct": value / anchor - 1}
 
 
+def _resolve_eval_date(date: str) -> str:
+    """오늘 날짜에 아직 시세가 안 들어왔으면(장 시작 직후 등) 마지막 확정 거래일로 대체한다.
+    삼성전자를 카나리아로 한 번만 확인 — 이걸 안 하면 종목마다 개별적으로 폴백이 발동해서
+    '거래정지 감지' 경고가 대량으로(실제로는 halt가 아닌데) 찍히게 된다."""
+    try:
+        _get_open_price("005930", date)
+        return date
+    except RuntimeError:
+        return get_last_completed_trading_day(date)
+
+
 def mark_to_market_all(date: str | None = None) -> list[dict]:
     """실제 매매(주간 리밸런싱) 없이, 각 트랙이 지난주 확정한 목표비중을 오늘 실시간 가격으로
     평가만 해본다. DB에는 아무것도 기록하지 않는 순수 조회용 — 매매는 여전히 주 1회만 일어나고,
     그 사이 평가만 매일 확인하고 싶을 때 쓴다(리밸런싱 비용/회전율 계산에 전혀 영향 없음)."""
-    date = date or datetime.now().strftime("%Y-%m-%d")
+    date = _resolve_eval_date(date or datetime.now().strftime("%Y-%m-%d"))
     results = [_mark_to_market_my_holdings(date)]
     for track_id in config.LENS_TRACKS:
         results.append(_mark_to_market_rebalanced(track_id, date))

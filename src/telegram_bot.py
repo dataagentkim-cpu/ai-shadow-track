@@ -45,7 +45,8 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     await update.message.reply_text(
         "AI 투자 판단 섀도우 트랙 봇입니다.\n\n"
-        "/performance - 4파전 최신 수익률\n"
+        "/performance - 4파전 최신 수익률(지난 화요일 체결 기준)\n"
+        "/eval - 매매 없이 오늘 실시간 가격으로만 평가(참고용, 기록 안 됨)\n"
         "/latest - 이번 주 AI 판단\n"
         "/history - 최근 8주 수익률 추이\n"
         "/why 종목명 - 특정 종목에 대한 최근 판단 이유\n"
@@ -76,6 +77,22 @@ async def cmd_performance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for r in sorted(rows, key=lambda x: _TRACK_LABEL.get(x["track_id"], x["track_id"])):
         label = _TRACK_LABEL.get(r["track_id"], r["track_id"])
         lines.append(f"{label}: {r['return_pct']:+.2%} ({r['portfolio_value']:,.0f}원, {r['snapshot_date']} 기준)")
+    await update.message.reply_text("\n".join(lines))
+
+
+async def cmd_eval(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """매매(리밸런싱)는 하지 않고, 지난주 확정된 포트폴리오를 오늘 실시간 가격으로만
+    평가해본다. DB에 아무것도 기록하지 않는 참고용 조회 — 매매는 여전히 주 1회(화요일)만."""
+    if not await _guard(update):
+        return
+    import benchmark
+
+    results = benchmark.mark_to_market_all()
+
+    lines = ["오늘 실시간 평가 (매매 없음, 기록 안 됨 — 참고용)\n"]
+    for r in sorted(results, key=lambda x: _TRACK_LABEL.get(x["track_id"], x["track_id"])):
+        label = _TRACK_LABEL.get(r["track_id"], r["track_id"])
+        lines.append(f"{label}: {r['return_pct']:+.2%} ({r['value']:,.0f}원)")
     await update.message.reply_text("\n".join(lines))
 
 
@@ -312,6 +329,7 @@ def main():
     app = Application.builder().token(token).build()
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("performance", cmd_performance))
+    app.add_handler(CommandHandler("eval", cmd_eval))
     app.add_handler(CommandHandler("latest", cmd_latest))
     app.add_handler(CommandHandler("history", cmd_history))
     app.add_handler(CommandHandler("why", cmd_why))

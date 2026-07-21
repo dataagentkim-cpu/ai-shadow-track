@@ -102,12 +102,27 @@ def _index_change(from_date: str, to_date: str) -> float:
     return 0.5 * kospi + 0.5 * kosdaq  # 코스피/코스닥 동일가중 블렌드 (브리프상 명시 안 됨, V1 가정)
 
 
+def _my_holdings_return_since(prev: dict, date: str) -> float:
+    """holdings 테이블의 실제 보유 수량 기준으로 prev 스냅샷 시점부터 date까지의
+    가중 보유수익률(거래비용 없음). 주간 스냅샷 기록과 평가 전용 조회(mark-to-market)가
+    공유하는 순수 계산 로직."""
+    conn = get_connection()
+    holdings = conn.execute("SELECT stock_code, quantity FROM holdings").fetchall()
+    conn.close()
+    prev_prices = {h["stock_code"]: _get_open_price_safe(h["stock_code"], prev["snapshot_date"])[0] for h in holdings}
+    prev_total = sum(prev_prices[h["stock_code"]] * h["quantity"] for h in holdings)
+    return sum(
+        (prev_prices[h["stock_code"]] * h["quantity"] / prev_total)
+        * _raw_return(h["stock_code"], prev["snapshot_date"], date)
+        for h in holdings
+    )
+
+
 def snapshot_my_holdings(week_id: str, date: str) -> dict:
     """내 실제 보유(고정 수량, 리밸런싱 없음)의 총수익 스냅샷. 배당을 포함해야 해서 첫 주 이후로는
     절대값 재계산이 아니라 직전 스냅샷에서 총수익률을 체인으로 이어간다."""
     conn = get_connection()
     anchor = _anchor_value(conn)
-    holdings = conn.execute("SELECT stock_code, quantity FROM holdings").fetchall()
 
     prev = conn.execute(
         "SELECT * FROM snapshots WHERE track_id = ? ORDER BY snapshot_date DESC LIMIT 1",
@@ -117,14 +132,7 @@ def snapshot_my_holdings(week_id: str, date: str) -> dict:
     if prev is None:
         value = anchor
     else:
-        prev_prices = {h["stock_code"]: _get_open_price_safe(h["stock_code"], prev["snapshot_date"])[0] for h in holdings}
-        prev_total = sum(prev_prices[h["stock_code"]] * h["quantity"] for h in holdings)
-        weighted_return = sum(
-            (prev_prices[h["stock_code"]] * h["quantity"] / prev_total)
-            * _raw_return(h["stock_code"], prev["snapshot_date"], date)
-            for h in holdings
-        )
-        value = prev["portfolio_value"] * (1 + weighted_return)
+        value = prev["portfolio_value"] * (1 + _my_holdings_return_since(prev, date))
 
     return_pct = value / anchor - 1
     conn.execute(
@@ -134,6 +142,22 @@ def snapshot_my_holdings(week_id: str, date: str) -> dict:
     conn.commit()
     conn.close()
     return {"track_id": config.TRACK_MY_HOLDINGS, "value": value, "return_pct": return_pct}
+
+
+def _holding_return_since(track_id: str, prev: dict, date: str) -> tuple[float, dict]:
+    """prev 스냅샷 시점에 확정됐던 목표비중(prev_weights)을 그대로 들고 있다고 가정하고,
+    prev 시점부터 date까지의 보유수익률(가격+배당, 거래비용 없음)을 계산한다. 반환값:
+    (holding_return, prev_weights). 주간 스냅샷 기록과 평가 전용 조회(mark-to-market)가
+    공유하는 순수 계산 로직."""
+    conn = get_connection()
+    prev_decisions = conn.execute(
+        "SELECT stock_code, target_weight FROM decisions WHERE track_id = ? AND week_id = ?",
+        (track_id, prev["week_id"]),
+    ).fetchall()
+    conn.close()
+    prev_weights = {d["stock_code"]: d["target_weight"] / 100 for d in prev_decisions}
+    holding_return = sum(w * _raw_return(code, prev["snapshot_date"], date) for code, w in prev_weights.items())
+    return holding_return, prev_weights
 
 
 def _snapshot_rebalanced_track(track_id: str, week_id: str, date: str) -> dict:
@@ -151,11 +175,8 @@ def _snapshot_rebalanced_track(track_id: str, week_id: str, date: str) -> dict:
     if prev is None:
         value = anchor
     else:
-        prev_decisions = conn.execute(
-            "SELECT stock_code, target_weight FROM decisions WHERE track_id = ? AND week_id = ?",
-            (track_id, prev["week_id"]),
-        ).fetchall()
-        prev_weights = {d["stock_code"]: d["target_weight"] / 100 for d in prev_decisions}
+        holding_return, prev_weights = _holding_return_since(track_id, prev, date)
+        value_before_rebalance = prev["portfolio_value"] * (1 + holding_return)
 
         curr_decisions = conn.execute(
             "SELECT stock_code, target_weight FROM decisions WHERE track_id = ? AND week_id = ?",
@@ -164,11 +185,6 @@ def _snapshot_rebalanced_track(track_id: str, week_id: str, date: str) -> dict:
         if not curr_decisions:
             raise RuntimeError(f"{week_id}에 대한 '{track_id}' 판단이 없음 — decision 단계가 먼저 실행됐는지 확인 필요")
         curr_weights = {d["stock_code"]: d["target_weight"] / 100 for d in curr_decisions}
-
-        holding_return = sum(
-            w * _raw_return(code, prev["snapshot_date"], date) for code, w in prev_weights.items()
-        )
-        value_before_rebalance = prev["portfolio_value"] * (1 + holding_return)
 
         cost_pct = _rebalance_cost_pct(prev_weights, curr_weights)
         value = value_before_rebalance * (1 - cost_pct)
@@ -226,6 +242,64 @@ def snapshot_all(week_id: str, date: str) -> list[dict]:
         results.append(snapshot_index_track(week_id, date))
     except RuntimeError as e:
         print(f"[benchmark] 경고: 지수(③) 스냅샷 실패, 나머지 트랙은 정상 기록됨 — {e}")
+    return results
+
+
+def _mark_to_market_my_holdings(date: str) -> dict:
+    conn = get_connection()
+    anchor = _anchor_value(conn)
+    prev = conn.execute(
+        "SELECT * FROM snapshots WHERE track_id = ? ORDER BY snapshot_date DESC LIMIT 1",
+        (config.TRACK_MY_HOLDINGS,),
+    ).fetchone()
+    conn.close()
+    if prev is None:
+        return {"track_id": config.TRACK_MY_HOLDINGS, "value": anchor, "return_pct": 0.0}
+    value = prev["portfolio_value"] * (1 + _my_holdings_return_since(prev, date))
+    return {"track_id": config.TRACK_MY_HOLDINGS, "value": value, "return_pct": value / anchor - 1}
+
+
+def _mark_to_market_rebalanced(track_id: str, date: str) -> dict:
+    conn = get_connection()
+    anchor = _anchor_value(conn)
+    prev = conn.execute(
+        "SELECT * FROM snapshots WHERE track_id = ? ORDER BY snapshot_date DESC LIMIT 1", (track_id,)
+    ).fetchone()
+    conn.close()
+    if prev is None:
+        return {"track_id": track_id, "value": anchor, "return_pct": 0.0}
+    holding_return, _ = _holding_return_since(track_id, prev, date)
+    value = prev["portfolio_value"] * (1 + holding_return)
+    return {"track_id": track_id, "value": value, "return_pct": value / anchor - 1}
+
+
+def _mark_to_market_index(date: str) -> dict:
+    conn = get_connection()
+    anchor = _anchor_value(conn)
+    prev = conn.execute(
+        "SELECT * FROM snapshots WHERE track_id = ? ORDER BY snapshot_date DESC LIMIT 1",
+        (config.TRACK_INDEX,),
+    ).fetchone()
+    conn.close()
+    if prev is None:
+        return {"track_id": config.TRACK_INDEX, "value": anchor, "return_pct": 0.0}
+    value = prev["portfolio_value"] * (1 + _index_change(prev["snapshot_date"], date))
+    return {"track_id": config.TRACK_INDEX, "value": value, "return_pct": value / anchor - 1}
+
+
+def mark_to_market_all(date: str | None = None) -> list[dict]:
+    """실제 매매(주간 리밸런싱) 없이, 각 트랙이 지난주 확정한 목표비중을 오늘 실시간 가격으로
+    평가만 해본다. DB에는 아무것도 기록하지 않는 순수 조회용 — 매매는 여전히 주 1회만 일어나고,
+    그 사이 평가만 매일 확인하고 싶을 때 쓴다(리밸런싱 비용/회전율 계산에 전혀 영향 없음)."""
+    date = date or datetime.now().strftime("%Y-%m-%d")
+    results = [_mark_to_market_my_holdings(date)]
+    for track_id in config.LENS_TRACKS:
+        results.append(_mark_to_market_rebalanced(track_id, date))
+    results.append(_mark_to_market_rebalanced(config.TRACK_EQUAL_WEIGHT, date))
+    try:
+        results.append(_mark_to_market_index(date))
+    except RuntimeError as e:
+        print(f"[benchmark] 경고: 지수(③) 평가 실패 — {e}")
     return results
 
 

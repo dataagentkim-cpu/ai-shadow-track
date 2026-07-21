@@ -62,7 +62,9 @@ async def cmd_performance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     rows = conn.execute(
         """SELECT s.* FROM snapshots s
            JOIN (SELECT track_id, MAX(snapshot_date) AS max_date FROM snapshots GROUP BY track_id) latest
-           ON s.track_id = latest.track_id AND s.snapshot_date = latest.max_date"""
+           ON s.track_id = latest.track_id AND s.snapshot_date = latest.max_date
+           WHERE s.track_id != ?""",
+        (config.TRACK_AI_BLIND,),
     ).fetchall()
     conn.close()
 
@@ -70,10 +72,10 @@ async def cmd_performance(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("아직 벤치마크 스냅샷이 없습니다. run_weekly를 먼저 실행하세요.")
         return
 
-    lines = [f"트랙별 최신 수익률 (기준일: {rows[0]['snapshot_date']})\n"]
+    lines = ["트랙별 최신 수익률\n"]
     for r in sorted(rows, key=lambda x: _TRACK_LABEL.get(x["track_id"], x["track_id"])):
         label = _TRACK_LABEL.get(r["track_id"], r["track_id"])
-        lines.append(f"{label}: {r['return_pct']:+.2%} ({r['portfolio_value']:,.0f}원)")
+        lines.append(f"{label}: {r['return_pct']:+.2%} ({r['portfolio_value']:,.0f}원, {r['snapshot_date']} 기준)")
     await update.message.reply_text("\n".join(lines))
 
 
